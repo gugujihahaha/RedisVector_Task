@@ -218,11 +218,11 @@ def main():
     print(f"  [OK] 切片完成: {len(all_docs)} 页面 → {len(chunks)} 个语块")
 
     # ---- 4. 向量化并写入 Redis ----
-    print("\n[4/5] 正在向量化并写入 Redis（使用 all-MiniLM-L6-v2 模型）...")
-    print("  模型: sentence-transformers/all-MiniLM-L6-v2 (384维)")
+    print("\n[4/5] 正在向量化并写入 Redis（使用 BAAI/bge-small-zh-v1.5 模型）...")
+    print("  模型: BAAI/bge-small-zh-v1.5 (512维，专为中文优化)")
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="BAAI/bge-small-zh-v1.5"
     )
 
     metadata_schema = [
@@ -237,7 +237,7 @@ def main():
         metadata_schema=metadata_schema,
         indexing_algorithm="HNSW",
         distance_metric="COSINE",
-        embedding_dimensions=384,
+        embedding_dimensions=512,
     )
 
     print("  正在逐批写入语块，请耐心等待...")
@@ -267,7 +267,7 @@ def main():
     print("  知识库构建完成！")
     print(f"  索引名称: rag_knowledge_base")
     print(f"  总语块数: {len(chunks)}")
-    print(f"  Embedding 模型: all-MiniLM-L6-v2 (384维)")
+    print(f"  Embedding 模型: BAAI/bge-small-zh-v1.5 (512维)")
     print("=" * 60)
 
 
