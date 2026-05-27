@@ -36,9 +36,18 @@ st.markdown("""
     }
 
     /* ----- 正文排版 ----- */
-    .stMarkdown p, .stMarkdown li, .stText {
+    .stMarkdown p {
+        line-height: 1.95 !important;
+        letter-spacing: 0.03em !important;
+        color: #334155;
+        font-size: 0.95rem;
+        margin-bottom: 1.6em !important;
+        text-align: justify !important;
+        text-justify: inter-word !important;
+    }
+    .stMarkdown li, .stText {
         line-height: 1.8;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.03em;
         color: #334155;
         font-size: 0.95rem;
         margin-bottom: 0.8em;
@@ -119,14 +128,20 @@ st.markdown("""
     }
 
     .card-body {
-        white-space: pre-wrap;
-        line-height: 1.9;
-        letter-spacing: 0.05em;
-        color: #334155;
-        font-size: 0.92rem;
-        margin-bottom: 16px;
+        margin-bottom: 20px;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
                      "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    }
+    .card-para {
+        display: block;
+        line-height: 2.0 !important;
+        letter-spacing: 0.03em !important;
+        color: #334155;
+        font-size: 0.92rem;
+        margin-bottom: 0;
+        text-align: justify !important;
+        text-justify: inter-word !important;
+        text-indent: 2em;
     }
 
     .card-images {
@@ -238,8 +253,15 @@ def get_index_info() -> dict:
         return {}
 
 
-def clean_text(text: str) -> str:
-    return re.sub(r"\n{3,}", "\n\n", text.strip())
+def render_paragraphs(content: str) -> str:
+    """
+    将文本按 \\n\\n 拆分为段落，每段包裹在 <p class="card-para"> 中，
+    实现首行缩进 + 两端对齐的书刊级排版。空段落跳过。
+    """
+    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return f'<p class="card-para">{content.strip()}</p>'
+    return "\n".join(f'<p class="card-para">{p}</p>' for p in paragraphs)
 
 
 def parse_image_paths(raw: str) -> list[str]:
@@ -333,8 +355,9 @@ with tab_search:
 
                     source_label = title if title else source_url
 
-                    # ---- 卡片头部 HTML ----
-                    header_html = f"""
+                    # ---- 卡片 HTML ----
+                    body_html = render_paragraphs(doc.page_content)
+                    card_html = f"""
                     <div class="result-card">
                         <div class="card-header">
                             <span class="card-title">{source_label}</span>
@@ -343,22 +366,25 @@ with tab_search:
                                 <span class="badge badge-score">{score:.4f}</span>
                             </div>
                         </div>
-                        <div class="card-body">{clean_text(doc.page_content)}</div>
+                        <div class="card-body">
+                            {body_html}
+                        </div>
                     """
 
                     if source_url.startswith("http"):
-                        header_html += f"""
+                        card_html += f"""
                         <div class="card-footer">
                             <a href="{source_url}" target="_blank">View Source Document &rarr;</a>
                         </div>
                         """
 
-                    header_html += "</div>"
+                    card_html += "</div>"
 
-                    st.markdown(header_html, unsafe_allow_html=True)
+                    st.markdown(card_html, unsafe_allow_html=True)
 
                     # ---- 渲染抽取的图片 ----
                     if image_paths:
+                        st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
                         cols = st.columns(min(len(image_paths), 3))
                         for j, img_path in enumerate(image_paths):
                             with cols[j % 3]:
@@ -368,9 +394,8 @@ with tab_search:
                                     caption="教材原页扫描图",
                                 )
 
-                    # ---- 卡片间距 ----
                     st.markdown(
-                        '<div style="height:8px;"></div>',
+                        '<div style="height:24px;"></div>',
                         unsafe_allow_html=True,
                     )
 

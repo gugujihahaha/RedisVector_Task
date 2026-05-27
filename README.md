@@ -366,6 +366,67 @@ streamlit run app.py
 
 本系统采用**极简企业级 UI 风格**（参考 Vercel / Stripe 设计语言）。页面以大面积留白和克制的黑白灰配色为主，无彩色装饰条、无 Emoji 图标。侧边栏仅保留必要的检索参数控件，主区域仅保留搜索框与结果卡片。每条检索结果卡片包含三项核心信息：`RELEVANCE` 相似度得分、正文内容、`View Source Document` 源网页链接。
 
+系统 V2.6 版本引入了基于 NLP 正则的 OCR 文本断句清洗算法，彻底解决了扫描件提取文本的碎裂换行痛点；配合前端两端对齐（Justify）及首行缩进排版，提供了印刷级的交互式阅读体验。
+
+### 团队协同与多端访问
+
+系统现已原生采用 **cpolar** 作为高稳定性内网穿透方案。cpolar 拥有国内专属节点优化，完美兼容移动端（手机/平板）与 PC 端浏览器的 WebSocket 实时长连接，双端秒开，彻底告别断流与空白页问题。
+
+#### 方案优势
+
+- 国内节点加速，延迟极低
+- 原生支持 WebSocket 长连接，Streamlit 无刷新断连风险
+- 提供干净的公网 HTTPS 链接，评审老师点击即开
+
+#### 部署步骤
+
+**首次运行（仅需配置一次）：**
+
+```bash
+cpolar authtoken <您的TOKEN密钥>
+```
+
+**每次启动映射：**
+
+```bash
+cpolar http 8501
+```
+
+执行后终端会生成一个公网访问地址（形如 `https://xxxx.cpolar.io`），小组成员或评审老师直接在浏览器中打开该链接即可安全访问，无需粘贴公网 IP 或进行任何二次验证。
+
+---
+
+### 💡 核心高频报错排查
+
+以下是 Windows 环境下组员克隆代码后最常遇到的启动报错及保姆级解决方案。
+
+#### 问题 A：无法将"cpolar"项识别为 cmdlet 或可运行程序的名称
+
+**核心原因：** 刚安装完 cpolar 软件后未重启当前终端，或系统 PATH 环境变量未及时刷新。
+
+**解决方案：**
+
+1. 彻底关闭当前的 PyCharm 终端、PowerShell 或 CMD 窗口，重新打开后再试。
+2. 若依旧报错，可直接切入 cpolar 的默认物理安装路径下运行：
+   - 在终端执行：`cd "C:\Program Files\cpolar"`
+   - 随后执行：`.\cpolar http 8501`（PowerShell）或 `cpolar http 8501`（CMD）
+
+---
+
+#### 问题 B：无法将"streamlit"项识别为 cmdlet 或可运行程序的名称
+
+**核心原因：** 重新打开的终端窗口没有激活 Python 虚拟环境（venv），系统无法全局索引 streamlit 命令。
+
+**解决方案：**
+
+1. 确保在项目根目录下先执行虚拟环境激活命令：
+   - PowerShell：`.\venv\Scripts\activate`
+   - CMD：`venv\Scripts\activate`
+2. 若激活后依旧报"系统路径拒绝"类错误，可使用 Python 模块化点名方式强行绕过查找直接启动：
+   ```bash
+   python -m streamlit run app.py
+   ```
+
 ### 停止服务
 
 在运行 Streamlit 的终端中按 `Ctrl + C` 即可停止服务。```

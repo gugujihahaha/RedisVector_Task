@@ -22,6 +22,8 @@ PDF2IMAGE_OK = False
 
 try:
     import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = r"D:\Program Files\Tesseract-OCR\tesseract.exe"
+    os.environ["TESSDATA_PREFIX"] = r"C:\Program Files\Tesseract-OCR\tessdata"
     TESSERACT_OK = True
 except ImportError:
     pass
@@ -44,32 +46,36 @@ def map_topic(filename: str) -> str:
 
 def clean_ocr_text(text: str) -> str:
     """
-    清洗 OCR 输出：
-    1. 按双换行分割为段落
-    2. 段内将单换行替换为空格（修复 OCR 的断行截断）
-    3. 合并多余空白
+    OCR 文本高级清洗流水线：
+    1. 先规范化所有换行符
+    2. 将 3+ 连续换行统一压缩为段落分隔符 \\n\\n
+    3. 按段落拆分，段内把孤立的单换行视为排版截断，直接移除
+    4. 段内合并不规范的多余空白
+    5. 剔除段首段尾的零碎空格
+    6. 只保留长度 >= 10 的有意义段落
     """
-    # 规范化换行
     text = re.sub(r"\r\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    paragraphs = text.split("\n\n")
-    cleaned_paragraphs = []
-    for para in paragraphs:
-        para = re.sub(r"\n", "", para)  # 段内换行 → 移除
-        para = re.sub(r"\s+", " ", para)  # 合并多余空白
+    raw_paragraphs = text.split("\n\n")
+    cleaned = []
+    for para in raw_paragraphs:
+        # 段内：孤立换行符 → 视为 OCR 排版截断，替换为空格
+        para = re.sub(r"\n+", " ", para)
+        # 合并多余空白
+        para = re.sub(r"\s{2,}", " ", para)
         para = para.strip()
-        if para:
-            cleaned_paragraphs.append(para)
+        if len(para) >= 10:
+            cleaned.append(para)
 
-    return "\n\n".join(cleaned_paragraphs)
+    return "\n\n".join(cleaned)
 
 
 def check_tesseract_chinese() -> bool:
     """检测 Tesseract 是否安装了中文语言包。"""
     try:
         langs = pytesseract.get_languages()
-        return "chi_sim" in langs or "chi_tra" in langs
+        return "chi_sim.traineddata" in langs or "chi_tra" in langs
     except Exception:
         return False
 
