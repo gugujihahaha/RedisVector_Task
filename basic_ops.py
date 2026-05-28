@@ -5,6 +5,10 @@ Redis Vector 基础操作演示 —— 使用底层 redis-py 直接执行 Redis 
 
 import numpy as np
 import redis
+print("redis version:", redis.__version__)
+print("redis.Redis:", redis.Redis)
+import inspect
+print("Redis.__init__ signature:", inspect.signature(redis.Redis.__init__))
 
 # ============================================================
 # 【论文关键论述】Redis 原生是 Schema-less 的，
@@ -60,13 +64,13 @@ def main():
     r.ping()
     print("[OK] Redis 连接成功")
 
-    # ---- 2. 删除可能存在的旧索引（保证幂等运行） ----
+    # ---- 2. 删除可能存在的旧索引 ----
     try:
         r.execute_command("FT.DROPINDEX", "idx:books", "DD")
     except redis.exceptions.ResponseError:
         pass  # 索引不存在则忽略
 
-    # ---- 3. 使用 FT.CREATE 显式创建向量索引 ----
+    # ---- 3. 使用 FT.CREATE 创建向量索引 ----
     # Schema 组成：
     #   title  → TEXT        (全文可搜索)
     #   category → TAG       (分类过滤/聚合)
@@ -86,7 +90,7 @@ def main():
     r.execute_command(*create_cmd)
     print("[OK] 向量索引 idx:books 创建成功")
 
-    # ---- 4. 插入 3 条模拟图书数据 ----
+    # ---- 4. 插入 3 条图书数据 ----
     rng = np.random.default_rng(42)
     books = [
         {"title": "数据库系统概论", "category": "database"},
@@ -106,7 +110,7 @@ def main():
         print(f"[OK] 已插入 {key}: {book['title']} (category={book['category']})")
 
     # ---- 5. 执行 KNN 向量检索 ----
-    # 构造一个查询向量（模拟用户想找"数据库相关"书的语义向量）
+    # 构造一个查询向量
     query_vec = np.array([0.1, 0.9, 0.3, 0.7], dtype=np.float32).tobytes()
 
     print("\n>>> KNN 检索（返回最相似的 2 条，按相似度降序）：")
