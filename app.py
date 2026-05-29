@@ -32,6 +32,21 @@ if DEEPSEEK_API_KEY:
 else:
     llm = None
 
+@st.cache_resource
+def load_ai_models():
+    print(">>> 首次启动：正在将 BGE 模型加载到内存，请稍候...")
+    embed = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
+    chat_llm = ChatOpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        streaming=True
+    ) if DEEPSEEK_API_KEY else None
+    return embed, chat_llm
+
+# 获取缓存好的模型
+embeddings, llm = load_ai_models()
+
 # 配置全局语义缓存
 try:
     set_llm_cache(RedisSemanticCache(
@@ -80,23 +95,7 @@ st.markdown("""
         animation: none !important;
     }
     header[data-testid="stHeader"], [data-testid="stDecoration"], #MainMenu, footer, .stDeployButton { display: none !important; }
-    [data-testid="stBottom"] {
-        background-color: #FFFFFF !important;
-        z-index: 9999 !important;
-    }
-    [data-testid="stChatInput"] {
-        background-color: #FFFFFF !important;
-        padding-bottom: 20px !important;
-    }
-    [data-testid="stChatInput"] * {
-        opacity: 1 !important;
-        background-color: transparent !important;
-        color: #1E293B !important;
-        cursor: text !important;
-    }
-    [data-testid="stMainBlockContainer"] {
-        padding-bottom: 150px !important; 
-    }
+
     [data-testid="stMainBlockContainer"] {
         opacity: 1 !important;
         filter: blur(0px) !important;
@@ -147,7 +146,7 @@ st.markdown("""
 
 # 核心功能与缓存函数
 @st.cache_resource
-def init_vector_store():
+def init_vector_store(_embed_model):
     client = Redis(host="localhost", port=6379)
     client.ping()
     return RedisVectorStore.from_existing_index(
@@ -156,7 +155,7 @@ def init_vector_store():
         redis_client=client,
     )
 
-vector_store = init_vector_store()
+vector_store = init_vector_store(embeddings)
 client = Redis(host="localhost", port=6379)
 
 @st.cache_data(ttl=30)
@@ -213,44 +212,58 @@ with st.sidebar:
     else:
         tag_option = st.selectbox("分类过滤", options=["All"])
 
-st.title("动态知识库交互空间")
+    st.markdown("---")
+col1, col2 = st.columns([4, 1])
+
+with col1:
+    st.title("Redis Vector智能检索引擎")
+
+with col2:
+    st.write("")
+    if st.button("🗑️ 清空对话", use_container_width=True):
+        if "session_id" in st.session_state:
+            RedisChatMessageHistory(st.session_state.session_id, url="redis://localhost:6379").clear()
+            st.rerun()
+
 st.markdown("---")
 
 tab_search, tab_dashboard = st.tabs(["智能探索", "系统监控"])
 
 # Tab 1: 智能探索空间
 with tab_search:
-    session_id = "default_user_session"
+    import uuid
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = f"session_{uuid.uuid4()}"
+    session_id = st.session_state.session_id
+
     chat_history = RedisChatMessageHistory(session_id, url="redis://localhost:6379")
-    for msg in chat_history.messages[-40:]:
-        if msg.type == "human":
-            render_user_bubble(msg.content)
-        else:
-            with st.chat_message("assistant"):
-                st.markdown(msg.content)
-
+    chat_container = st.container(height=600, border=False)
+    with chat_container:
+        for msg in chat_history.messages[-40:]:
+            if msg.type == "human":
+                render_user_bubble(msg.content)
+            else:
+                with st.chat_message("assistant"):
+                    st.markdown(msg.content)
     query = st.chat_input("向大模型提问...")
-
     if query:
-        render_user_bubble(query)
+        with chat_container:
+            render_user_bubble(query)
+            tag_filter = None if (tag_option == "All" or not dynamic_topics) else Tag("topic") == tag_option
+            with st.chat_message("assistant"):
+                status_placeholder = st.empty()
+                status_placeholder.markdown(" *正在理解语义并检索...*")
 
-        tag_filter = None if (tag_option == "All" or not dynamic_topics) else Tag("topic") == tag_option
+                start_time = time.time()
+                raw_results = vector_store.similarity_search_with_score(query=query, k=top_k, filter=tag_filter)
+                think_time = time.time() - start_time
+                status_placeholder.empty()
 
-        with st.chat_message("assistant"):
-
-            status_placeholder = st.empty()
-            status_placeholder.markdown("⏳ *正在理解语义并检索高维空间...*")
-
-            start_time = time.time()
-            raw_results = vector_store.similarity_search_with_score(query=query, k=top_k, filter=tag_filter)
-            think_time = time.time() - start_time
-            status_placeholder.empty()
-
-            with st.expander(f"💠 已思考 (检索用时 {think_time:.2f} 秒)", expanded=False):
-                if raw_results:
-                    st.markdown("已从数据库中提取相关片段作为参考...")
-                else:
-                    st.markdown("未检索到强相关数据，将直接生成回答...")
+                with st.expander(f"💠 已思考 (检索用时 {think_time:.2f} 秒)", expanded=False):
+                    if raw_results:
+                        st.markdown("已从数据库中提取相关片段作为参考...")
+                    else:
+                        st.markdown("未检索到强相关数据，将直接生成回答...")
 
             # 准备提示词
             context_text = ""

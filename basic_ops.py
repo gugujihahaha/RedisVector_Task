@@ -4,6 +4,8 @@ Redis Vector 基础操作演示
 
 import numpy as np
 import redis
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
 print("redis version:", redis.__version__)
 print("redis.Redis:", redis.Redis)
 import inspect
@@ -13,8 +15,10 @@ def main():
     r = redis.Redis(host="localhost", port=6379, decode_responses=False)
     r.ping()
     print("\n[OK] Redis 连接成功！")
-    # ---- 2. 删除可能存在的旧索引 ----
 
+    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
+
+    # ---- 2. 删除可能存在的旧索引 ----
     # 删除索引，末尾的DD参数表示DropDocument，即同时删掉底层的数据记录。
     # FT.DROPINDEX idx: books DD
     try:
@@ -40,7 +44,7 @@ def main():
         "category", "TAG",
         "embedding", "VECTOR", "HNSW", "6",
         "TYPE", "FLOAT32",
-        "DIM", "4",
+        "DIM", "512",
         "DISTANCE_METRIC", "COSINE",
     ]
     r.execute_command(*create_cmd)
@@ -81,10 +85,11 @@ def main():
         {"title": "乌合之众", "category": "literature"}, {"title": "人类简史", "category": "literature"}
     ]
 
-    print("\n>>> 正在向 Redis 向量数据库中灌入 50 条数据...")
+    print("\n>>> 正在计算50条数据的向量坐标并向Redis向量数据库中灌入...")
     for i, book in enumerate(books):
         key = f"book:{i + 1}"
-        vec = rng.random(4, dtype=np.float32).tobytes()
+        raw_vec = embeddings.embed_query(book["title"])
+        vec = np.array(raw_vec, dtype=np.float32).tobytes()
         "\x12\x34\x56..."
         # 使用r.hset写入哈希表
         # Redis插入数据使用Hash写入命令，索引引擎会在后台自动抓取并建立高维向量图。
@@ -97,9 +102,10 @@ def main():
     print(f"[OK] 50 条测试数据全部插入完毕！")
 
     # ---- 5. 执行 KNN 向量检索 (Query) ----
-    query_vec = np.array([0.1, 0.9, 0.3, 0.7], dtype=np.float32).tobytes()
-
-    print("\n>>> KNN 向量检索启动：从 50 本书中寻找最相似的 TOP 5...")
+    search_text = "我想找一本关于数据库底层的书，最好是讲优化的"
+    print(f"\n>>> KNN 向量检索启动：寻找与 '{search_text}' 语义最接近的 TOP 5...")
+    query_raw_vec = embeddings.embed_query(search_text)
+    query_vec = np.array(query_raw_vec, dtype=np.float32).tobytes()
     # 使用r.hset写入哈希表
     # 在所有数据（ * ）中，寻找与$qvec 向量距离最近的5个邻居，将距离重命名为score并按它排序。DIALECT 2 声明使用最新版的向量查询方言。)
     # FT.SEARCH idx: books "*=>[KNN 5 @embedding $qvec AS score]"
@@ -117,7 +123,7 @@ def main():
 
     # 解析并展示结果
     total = result[0]
-    print(f"向量空间比对完成！为您推荐以下 {total} 本高维相似书籍：")
+    print(f"向量空间比对完成！为您推荐以下 {total} 本书：")
     for i in range(1, len(result), 2):
         key = result[i]
         fields = result[i + 1]
@@ -125,19 +131,17 @@ def main():
         title = info.get(b"title", b"").decode()
         category = info.get(b"category", b"").decode()
         score = float(info.get(b"score", b"0"))
-        print(f"  📌 [{key.decode()}] 《{title}》 | 领域: {category:<10} | 语义距离: {score:.6f}")
+        print(f" [{key.decode()}] 《{title}》 | 领域: {category:<10} | 语义距离: {score:.6f}")
 
     # ---- 6. 更新与删除操作 ----
     print("\n>>> 数据更新与删除操作演示：")
-
     # 6.1 更新操作：把 book:41 (百年孤独) 的分类更新
     # 使用r.hset覆盖原有字段
     # HSET book: 1 category "classic_literature"
     r.hset("book:41", "category", "classic_literature")
     updated_category = r.hget("book:41", "category").decode()
     print(f"  [修改] 已将 book:41 (百年孤独) 的分类更新为: {updated_category}")
-
-    # 6.2 删除操作：踢掉 book:42 (围城)
+    # 6.2 删除操作：删掉book:42 (围城)
     # 使用r.delete物理删除
     # DEL book: 1
     r.delete("book:42")

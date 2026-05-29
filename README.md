@@ -1,11 +1,24 @@
-# Redis Vector 期末调研报告 —— 环境部署与实验指南
+# Redis Vector 向量数据库调研报告
 
-> 适用对象：《数据库原理》课程小组成员
-> 前置条件：一台能上网的电脑（Windows / macOS / Linux 均可）
+> **课程：**《数据库原理》期末调研大作业
+> **调研方向：** 向量数据库 —— Redis Vector
+> **前置条件：** 一台能上网的电脑（Windows / macOS / Linux 均可）
 
 ---
 
-## 一、环境要求
+## 一、调研背景
+
+随着大语言模型（LLM）的普及，向量数据库作为 RAG（检索增强生成）架构的核心基础设施，成为数据库领域的研究热点。本小组选择 **Redis Vector** 作为调研对象，它是 Redis Stack 的原生向量扩展模块，基于 HNSW（Hierarchical Navigable Small World）近似最近邻算法实现高效向量检索。
+
+本次调研重点关注 Redis Vector 的 **CRUD 操作**（增删改查），包括：
+- 索引的创建与删除（`FT.CREATE` / `FT.DROPINDEX`）
+- 向量数据的写入与更新（`HSET` + 向量序列化）
+- KNN 相似度检索（`FT.SEARCH` 搭配 `=>[KNN $K @vec $BLOB]` 语法）
+- Tag 过滤 + 向量混合查询（metadata 映射与联合过滤）
+
+---
+
+## 二、环境要求
 
 | 软件 | 最低版本 | 说明 |
 |------|---------|------|
@@ -13,7 +26,9 @@
 | Python | 3.10+ | 运行实验脚本 |
 | Git | 任意版本 | 拉取代码 |
 
-## 二、快速开始（三步走）
+---
+
+## 三、快速开始（三步走）
 
 ### 步骤 1：启动 Redis Stack 容器
 
@@ -27,7 +42,7 @@ docker compose up -d
 - 自动拉取 `redis/redis-stack:latest` 镜像（约 1.5GB，仅首次需要下载）
 - 创建名为 `redis-vector-lab` 的容器
 - 暴露两个端口：
-  - `6379` —— Redis 服务（我们的 Python 脚本连接这个端口）
+  - `6379` —— Redis 服务（Python 脚本连接此端口）
   - `8001` —— RedisInsight 可视化管理面板（浏览器访问 http://localhost:8001）
 - 开启 AOF 持久化（数据不会因容器重启而丢失）
 
@@ -60,18 +75,20 @@ pip install redis numpy langchain-redis langchain-community langchain-core
 ### 步骤 3：运行实验脚本
 
 ```bash
-# 基础操作演示（FT.CREATE 建索引 + KNN 检索）
+# 基础 CRUD 操作演示（FT.CREATE 建索引 + HSET 写入 + KNN 检索）
 python basic_ops.py
 
-# RAG 混合检索演示（Tag 过滤 + 向量相似度）
+# 混合检索演示（Tag 过滤 + 向量相似度）
 python rag_demo.py
 ```
 
 ---
 
-## 三、实验脚本说明
+## 四、实验脚本说明
 
-### `basic_ops.py` —— Redis Vector 底层操作
+### `basic_ops.py` —— Redis Vector 底层 CRUD 操作
+
+这是本次调研的核心实验脚本，演示了 Redis Vector 最基本的增删改查流程。
 
 **涵盖的知识点：**
 
@@ -80,20 +97,26 @@ python rag_demo.py
    - `category`（TAG）—— 精确分类过滤
    - `embedding`（VECTOR HNSW FLOAT32 COSINE）—— 向量字段
 
-2. **向量数据写入**：使用 numpy 生成随机向量，通过 bytes 存入 Redis Hash
+2. **向量数据写入（Create）**：使用 numpy 生成随机向量，通过 `struct.pack` 将 float32 数组序列化为 bytes，再通过 `HSET` 存入 Redis Hash
 
-3. **KNN 检索**：使用 `FT.SEARCH` 执行 K 近邻查询，返回相似度排序结果
+3. **向量数据读取（Read）**：使用 `HGETALL` 读取 Hash 中存储的完整记录，包括反序列化向量二进制
+
+4. **KNN 检索（Query）**：使用 `FT.SEARCH` 执行 K 近邻查询，语法为 `"*=>[KNN $K @embedding $query_vec AS score]"`，返回按相似度排序的结果
+
+5. **索引删除（Delete）**：使用 `FT.DROPINDEX` 删除索引，并对比 Schema-less 方式下直接 `DEL` key 的区别
 
 **代码中可抄录的论文素材：**
-- 文件顶部有约 40 行中文注释，详细论述"Redis 原生 Schema-less 为何 Vector 需要强 Schema"
+- 文件顶部有约 40 行中文注释，详细论述"Redis 原生 Schema-less 为何 Vector 需要强 Schema"，可直接摘录到调研报告中。
 
 ### `rag_demo.py` —— LangChain + Redis Vector 混合检索
 
+本脚本演示了将 Redis Vector 与 LangChain 框架集成后的高级查询能力。
+
 **涵盖的知识点：**
 
-1. **metadata_schema 映射**：通过 `RedisConfig.metadata_schema` 将 Document 的 metadata 字段（如 `topic`、`source`）映射为 Redis 的 TagField
+1. **metadata_schema 映射**：通过 `RedisConfig.metadata_schema` 将 Document 的 metadata 字段（如 `topic`、`source`）映射为 Redis 的 TagField，实现元数据索引
 
-2. **FakeEmbeddings 占位**：使用 LangChain 内置的 `FakeEmbeddings` 替代真实 OpenAI Embedding，无需 API Key
+2. **FakeEmbeddings 占位**：使用 LangChain 内置的 `FakeEmbeddings` 替代真实 Embedding 模型，无需 API Key 即可跑通流程
 
 3. **混合检索**：演示"Tag 过滤 + 向量相似度"的联合查询
    - 场景 A：纯向量检索（可能混入不相关主题）
@@ -101,7 +124,7 @@ python rag_demo.py
 
 ---
 
-## 四、常见问题排查
+## 五、常见问题排查
 
 ### Q1: Docker 启动失败，报端口被占用？
 
@@ -143,25 +166,48 @@ docker compose up -d
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple redis numpy langchain-redis langchain-community langchain-core
 ```
 
+### Q5: 容器启动后发现库是空的？
+
+**现象：** 容器正常运行，但用 `redis-cli` 连上去 `KEYS *` 发现之前存入的数据全部消失了，索引也不存在。
+
+**根本原因：** Docker Compose 在启动时，如果找不到 `docker-compose.yml` 中声明的外部数据卷，会**自动创建一个带项目前缀的新空数据卷**（例如自动生成 `redisvector_redis_data` 而非你之前使用的 `redis_rag_data`），导致绑定到了一个新的空白存储上。
+
+**解决方案：** 检查并修正 `docker-compose.yml` 中的 volumes 配置，确保显式指定了 `name` 为真实存在的数据卷名称：
+
+```yaml
+volumes:
+  redis_data:
+    external: true
+    name: redis_rag_data    # 必须与你之前灌库时使用的数据卷名称一致
+```
+
+可以通过以下命令查看当前系统中实际存在的数据卷：
+
+```bash
+docker volume ls
+```
+
+找到之前灌入数据时使用的卷名（如 `redis_rag_data`），将其填入上述 `name` 字段即可恢复访问原有数据。
+
 ---
 
-## 五、项目文件结构
+## 六、项目文件结构
 
 ```
 RedisVector_Task/
 ├── docker-compose.yml    # Docker 编排文件
-├── basic_ops.py          # 基础操作演示（FT.CREATE + KNN）
-├── rag_demo.py           # RAG 混合检索演示（LangChain + Tag 过滤）
-├── build_knowledge.py        # 一键爬取灌库脚本（构建专属知识库）
+├── basic_ops.py          # 基础 CRUD 操作演示（FT.CREATE + HSET + KNN）
+├── rag_demo.py           # 混合检索演示（LangChain + Tag 过滤）
+├── build_knowledge.py    # 网页爬取灌库脚本
 ├── build_pdf_knowledge.py    # 本地 PDF 教材批量解析入库
-├── app.py                    # Streamlit Web 可视化界面
+├── app.py                # Streamlit Web 可视化界面
 ├── README.md             # 本文件
 └── venv/                 # Python 虚拟环境（需自行创建）
 ```
 
 ---
 
-## 六、停止和清理
+## 七、停止和清理
 
 ```bash
 # 停止容器（保留数据）
@@ -176,257 +222,108 @@ docker compose down -v
 
 ---
 
-## 进阶功能：一键爬取并构建专属知识库
+## 八、扩展功能：知识库构建
 
-### 功能简介
+> 以下为调研过程中搭建的辅助实验工具，用于验证 Redis Vector 在实际 RAG 场景中的检索效果。
 
-`build_knowledge.py` 是一个**全自动知识库构建脚本**。它的核心能力是：
+### 8.1 网页爬取灌库 (`build_knowledge.py`)
 
-> 自动爬取互联网上指定的网页 → 将长文本智能切分成适合检索的语义片段 → 用真实开源 AI 模型将每段文本转化为向量 → 全部存入 Redis 向量数据库。
+自动爬取指定网页 → 文本语义切片 → BGE-m3 向量化 → 存入 Redis Vector。
 
-换句话说，运行它之前，Redis 里空空如也，检索结果是"智障"级别的随机乱序；跑完这个脚本之后，系统就拥有了真实的知识储备，变成了某个领域的"专家"。我们的脚本默认爬取了以下两个领域的数据：
-
-| 领域 | 数据来源 | 内容 |
-|------|---------|------|
-| 安师大计信学院 | 学院官网 | 学院简介、历史沿革等 |
-| 数据库原理 | 维基百科中文版 | 关系数据库、SQL、ACID、事务、B+ 树、NoSQL 等核心考点 |
-
-### 新增依赖安装
-
-这个脚本比基础脚本多了爬虫和真实向量模型的依赖，需要额外安装：
+**新增依赖：**
 
 ```bash
 pip install beautifulsoup4 lxml requests langchain-huggingface sentence-transformers
 ```
 
-如果你之前已经装过，重复执行不会有副作用。如果你使用的是国内网络，建议加镜像源加速：
-
-```bash
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple beautifulsoup4 lxml requests langchain-huggingface sentence-transformers
-```
-
-### 如何运行
-
-确保 Redis Stack 容器正在运行，然后在项目目录下执行：
+**运行：**
 
 ```bash
 python build_knowledge.py
 ```
 
-### 如何自定义数据源（重点）
+**自定义数据源：** 编辑脚本中的 `DATA_SOURCES` 列表，修改 `url`、`topic`、`source` 字段即可。
 
-如果你想让系统变成其他领域的"专家"（比如爬取算法导论、操作系统等考点），只需做两步：
+### 8.2 本地 PDF 教材入库 (`build_pdf_knowledge.py`)
 
-**第一步：** 用任意文本编辑器打开 `build_knowledge.py`。
+解析 `JiaoCai/` 文件夹下的 PDF 教材，自动识别文件名映射 topic，增量追加到 Redis 知识库中。
 
-**第二步：** 找到文件开头的 `DATA_SOURCES` 列表（大约第 30 行附近），它的结构是这样的：
-
-```python
-DATA_SOURCES = [
-    {
-        "url": "https://ci.ahnu.edu.cn/xygk/xyjj.htm",
-        "title": "安徽师范大学计算机与信息学院简介",
-        "topic": "ahnu",
-        "source": "安师大官网",
-    },
-    {
-        "url": "https://zh.wikipedia.org/zh-cn/SQL",
-        "title": "SQL 结构化查询语言",
-        "topic": "database",
-        "source": "维基百科",
-    },
-    # ... 更多条目
-]
-```
-
-修改方法：
-- **替换网址**：把 `url` 改成你想爬取的网页地址。
-- **调整分类**：把 `topic` 改成你自己的分类标签（如 `"algorithm"`、`"os"`）。这个标签会用于 Streamlit 界面的 Tag 过滤。
-- **写上来源**：把 `source` 改成网页来源的名称（会显示在检索结果卡片中）。
-- **增加/删除条目**：直接复制粘贴一个 `{...}` 块就能新增数据源，删掉一行就能移除。
-
-> 注意：如果某个网页有反爬机制（如百度百科），脚本会自动跳过它，不会影响其他页面的正常爬取。
-
-### 预期现象
-
-运行 `python build_knowledge.py` 后，你会看到类似以下的分步进度：
-
-```
-[1/5] 正在连接 Redis 并清理旧索引...
-  [OK] Redis 连接成功
-  [OK] 已删除旧索引 rag_knowledge_base
-
-[2/5] 正在爬取网页内容...
-  [1/8] 正在爬取: 安徽师范大学计算机与信息学院简介 (topic=ahnu) ... OK（2659 字符）
-  [2/8] 正在爬取: 关系数据库 (topic=database) ... OK（1405 字符）
-  ...
-
-[3/5] 正在进行语义切片 (chunk_size=400, overlap=50)...
-  [OK] 切片完成: 8 页面 → 81 个语块
-
-[4/5] 正在向量化并写入 Redis（使用 all-MiniLM-L6-v2 模型）...
-  [OK] 成功写入 81 个语块到 Redis 索引 rag_knowledge_base
-
-[5/5] 正在验证数据完整性...
-  [OK] 索引中共有 81 条记录
-  [OK] 其中「安师大计信学院」(topic=ahnu) 共 12 条
-  [OK] 其中「数据库原理」(topic=database) 共 69 条
-```
-
-几点说明：
-- **首次运行会下载 AI 模型**：`all-MiniLM-L6-v2` 模型约 80MB，首次运行时自动从 HuggingFace 下载，后续运行时直接使用本地缓存。
-- **耐心等待向量化**：81 个语块的向量化通常在 10~30 秒内完成，取决于你的 CPU 性能。
-- **幂等运行**：每次运行都会先清空旧的 `rag_knowledge_base` 索引再重新灌入，所以可以放心重复执行。
-- **部分失败不影响整体**：如果某个网页因为网络原因爬取失败，脚本会打印 `✗ 爬取失败` 并继续处理下一个，不会中断整个流程。
-
----
-
-## 终极功能：本地 PDF 教材批量解析入库
-
-### 功能简介
-
-系统现在不仅支持从互联网爬取网页构建知识库，还能直接读取本地的 PDF 教材（如《数据库系统概论》《操作系统概念》等经典课本）。脚本会将 PDF 按页加载，自动识别文件名并映射为分类标签（topic），经过语义切片后**增量追加**到现有的 Redis 向量数据库中。这意味着网页数据和教材数据可以共存于同一个知识库中，互不覆盖、互不干扰。
-
-### 准备工作
-
-1. 在项目根目录下创建 `JiaoCai/` 文件夹。
-2. 将需要解析的文字版 PDF 教材放入该文件夹。目前支持的自动标签映射规则如下：
-
-| 文件名包含 | 自动映射 topic | 示例 |
-|-----------|--------------|------|
-| `ShuJvKu` 或 `数据库` | `database` | `ShuJvKu.pdf` |
-| `CaoZuoXiTong` 或 `操作系统` | `os` | `CaoZuoXiTong.pdf` |
-| 其他 | `textbook` | `JiSuanJiWangLuo.pdf` |
-
-> 注意：PDF 必须是文字版（非扫描图片版），否则 PyPDFLoader 无法提取文本内容。
-
-### 依赖安装
-
-PDF 解析功能需要额外安装一个轻量级库：
+**依赖安装：**
 
 ```bash
 pip install pypdf
 ```
 
-### 运行命令
-
-确保 Redis Stack 容器正在运行，然后在项目目录下执行：
+**运行：**
 
 ```bash
 python build_pdf_knowledge.py
 ```
 
-### 惊艳效果预告
+### 8.3 Web 可视化演示 (`app.py`)
 
-脚本运行完毕后，**完全不需要修改任何前端代码**。只需刷新浏览器中的 Streamlit 页面，你会发现三个令人惊喜的变化：
+基于 Streamlit 的交互式查询界面，用于在课程答辩中进行 Redis Vector 检索效果的现场演示。
 
-1. **侧边栏自动生长**：左侧 Category 下拉菜单会自动出现新的分类标签（如 `os`、`textbook`），这些标签是通过 `FT.TAGVALS` 实时从 Redis 中拉取的，零硬编码。
-2. **精准定位原文**：在搜索框中输入问题（如"什么是进程？"），系统会直接从教材中揪出最相关的原文段落，并在结果卡片中标注教材文件名和相似度得分。
-3. **网页 + 教材混合检索**：之前爬取的维基百科数据库考点和现在导入的教材内容同处一个向量空间，搜索时系统会自动跨数据源找出最优答案。你可以通过 Category 下拉菜单自由切换"只看教材"还是"看全网数据"。
-
----
-
-## 进阶功能：Web 可视化演示
-
-### 什么是 Streamlit？
-
-Streamlit 是一个开源的 Python Web 框架，**专门用于快速构建数据科学和机器学习的交互式 Web 应用**。你不需要写 HTML、CSS 或 JavaScript，只需用纯 Python 代码就能生成漂亮的 UI 界面。它非常适合用于课程答辩时做现场演示。
-
-### 安装 Streamlit
+**安装与启动：**
 
 ```bash
 pip install streamlit
-```
-
-### 启动 Web 页面
-
-确保 Redis Stack 容器正在运行，然后在项目目录下执行：
-
-```bash
 streamlit run app.py
 ```
 
-运行成功后，终端会显示类似以下的提示：
+浏览器打开 http://localhost:8501 即可使用。
 
-```
-  You can now view your Streamlit app in your browser.
+---
 
-  Local URL:            http://localhost:8501
-  Network URL:          http://192.168.x.x:8501
-```
+## 九、项目亮点
 
-### 使用说明
+### 9.1 Redis CRUD 操作完整覆盖
 
-1. 在浏览器中打开 **http://localhost:8501**
-2. 左侧边栏仅保留两个核心控件：**Top K**（返回数量）和 **Category**（数据分类过滤）
-3. 在搜索框中输入问题（如"什么是 ACID？"），按 Enter 即可看到检索结果
-4. 每条结果以极简容器卡片呈现：顶部显示相关性得分与分类标签，正文为完整语块内容，底部附可点击的源文档链接
+本次调研的核心成果：从底层 `redis` 库（`basic_ops.py`）到上层 LangChain 封装（`rag_demo.py`），完整演示了 Redis Vector 的索引创建、数据写入、向量检索、结果过滤、索引删除的全生命周期操作。代码中每一处原始 Redis 命令调用均有详细注释，可直接作为调研报告的实验佐证。
 
-### 界面设计说明
+### 9.2 Docker 容器化持久化
 
-本系统采用**极简企业级 UI 风格**（参考 Vercel / Stripe 设计语言）。页面以大面积留白和克制的黑白灰配色为主，无彩色装饰条、无 Emoji 图标。侧边栏仅保留必要的检索参数控件，主区域仅保留搜索框与结果卡片。每条检索结果卡片包含三项核心信息：`RELEVANCE` 相似度得分、正文内容、`View Source Document` 源网页链接。
+使用 `docker-compose.yml` 实现数据卷强绑定，通过 `external: true` 声明外部命名卷并指定 `name: redis_rag_data`，确保即使执行 `docker compose down` 删除容器后，向量数据仍然完好地保存在宿主机磁盘上。重新 `docker compose up -d` 即可秒级恢复。
 
-系统 V2.6 版本引入了基于 NLP 正则的 OCR 文本断句清洗算法，彻底解决了扫描件提取文本的碎裂换行痛点；配合前端两端对齐（Justify）及首行缩进排版，提供了印刷级的交互式阅读体验。
+### 9.3 前端交互设计
 
-### 团队协同与多端访问
+`app.py` 的 UI 实现包括：
+- 输入框固定在页面底部，符合现代对话式 AI 产品的交互习惯
+- 优化了 Streamlit 的 `st.rerun()` 触发逻辑，消除搜索时的页面闪烁
+- LLM 生成的回答以打字机效果逐字呈现
 
-系统现已原生采用 **cpolar** 作为高稳定性内网穿透方案。cpolar 拥有国内专属节点优化，完美兼容移动端（手机/平板）与 PC 端浏览器的 WebSocket 实时长连接，双端秒开，彻底告别断流与空白页问题。
+### 9.4 内网穿透方案
 
-#### 方案优势
+系统采用 **cpolar** 作为内网穿透方案，支持 WebSocket 长连接，提供公网 HTTPS 链接，评审老师可直接打开访问，无需配置本地环境。
 
-- 国内节点加速，延迟极低
-- 原生支持 WebSocket 长连接，Streamlit 无刷新断连风险
-- 提供干净的公网 HTTPS 链接，评审老师点击即开
-
-#### 部署步骤
-
-**首次运行（仅需配置一次）：**
+**首次配置：**
 
 ```bash
 cpolar authtoken <您的TOKEN密钥>
 ```
 
-**每次启动映射：**
+**启动映射：**
 
 ```bash
 cpolar http 8501
 ```
 
-执行后终端会生成一个公网访问地址（形如 `https://xxxx.cpolar.io`），小组成员或评审老师直接在浏览器中打开该链接即可安全访问，无需粘贴公网 IP 或进行任何二次验证。
-
 ---
 
-### 💡 核心高频报错排查
+### 高频报错排查
 
-以下是 Windows 环境下组员克隆代码后最常遇到的启动报错及保姆级解决方案。
+#### 问题 A：无法将"cpolar"项识别为 cmdlet
 
-#### 问题 A：无法将"cpolar"项识别为 cmdlet 或可运行程序的名称
-
-**核心原因：** 刚安装完 cpolar 软件后未重启当前终端，或系统 PATH 环境变量未及时刷新。
+**核心原因：** 安装 cpolar 后未重启终端，或 PATH 未刷新。
 
 **解决方案：**
+1. 彻底关闭当前终端窗口，重新打开后再试。
+2. 若依旧报错，可直接切入 cpolar 安装路径：`cd "C:\Program Files\cpolar"` 后执行 `.\cpolar http 8501`。
 
-1. 彻底关闭当前的 PyCharm 终端、PowerShell 或 CMD 窗口，重新打开后再试。
-2. 若依旧报错，可直接切入 cpolar 的默认物理安装路径下运行：
-   - 在终端执行：`cd "C:\Program Files\cpolar"`
-   - 随后执行：`.\cpolar http 8501`（PowerShell）或 `cpolar http 8501`（CMD）
+#### 问题 B：无法将"streamlit"项识别为 cmdlet
 
----
-
-#### 问题 B：无法将"streamlit"项识别为 cmdlet 或可运行程序的名称
-
-**核心原因：** 重新打开的终端窗口没有激活 Python 虚拟环境（venv），系统无法全局索引 streamlit 命令。
+**核心原因：** 终端未激活 Python 虚拟环境（venv）。
 
 **解决方案：**
-
-1. 确保在项目根目录下先执行虚拟环境激活命令：
-   - PowerShell：`.\venv\Scripts\activate`
-   - CMD：`venv\Scripts\activate`
-2. 若激活后依旧报"系统路径拒绝"类错误，可使用 Python 模块化点名方式强行绕过查找直接启动：
-   ```bash
-   python -m streamlit run app.py
-   ```
-
-### 停止服务
-
-在运行 Streamlit 的终端中按 `Ctrl + C` 即可停止服务。```
+1. 先执行虚拟环境激活：`.\venv\Scripts\activate`
+2. 或使用 Python 模块化方式绕过：`python -m streamlit run app.py`
