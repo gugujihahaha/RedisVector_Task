@@ -1,144 +1,159 @@
 """
-Redis Vector RAG 混合检索演示 —— 基于 LangChain RedisVectorStore
-核心考点：metadata_schema 将元数据映射为 TagField | Tag 过滤 + 向量相似度混合查询
+Redis Vector RAG 演示 (100条学术知识库 + 真实RAG链路)
 """
+import warnings
+warnings.filterwarnings("ignore")
 
 from langchain_core.documents import Document
-from langchain_core.embeddings import FakeEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_redis import RedisConfig, RedisVectorStore
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
 from redis import Redis
-from redisvl.query.filter import Tag
 
-# ============================================================
-# 【论文论述素材】RAG 场景下的混合检索策略
-# ============================================================
-# 纯向量检索在高维空间中可能找到"语义相近但主题无关"的结果，
-# 例如：搜 "数据库索引"，纯 KNN 可能把 "搜索引擎倒排索引" 或
-# "Pandas DataFrame index" 都排进来。
-# 解决方法是混合检索（Hybrid Search）：
-#   1. 先用 TagField 做预过滤（在倒排索引中精确匹配）
-#   2. 再在过滤后的候选集上计算向量相似度
-# 这相当于在 SQL 层面先 WHERE category='database'，再 ORDER BY
-# cosine_similarity DESC。Redis 的 RediSearch 引擎可以在一次
-# FT.SEARCH 中同时完成两步，不需要客户端做二次筛选。
-# ============================================================
+DEEPSEEK_API_KEY = "sk-ef3a4e5c1a0c437e8927f18b5a445534"
 
+# 📚 50 条计算机考点数据
+RAW_DATA = [
+    # --- 🗄️ 数据库领域 (10条) ---
+    ("database", "数据库原理", "事务的ACID特性包括原子性、一致性、隔离性和持久性，是保证数据准确的核心。"),
+    ("database", "MySQL底层", "InnoDB存储引擎默认使用B+树作为索引结构，其叶子节点包含完整数据，适合范围查询。"),
+    ("database", "并发控制", "MVCC（多版本并发控制）通过保存数据的历史版本，实现读写不阻塞，解决了不可重复读问题。"),
+    ("database", "Redis缓存", "Redis是基于内存的KV数据库，单线程架构配合IO多路复用，使其拥有极高的读写性能。"),
+    ("database", "数据异常", "脏读是指一个事务读取了另一个未提交事务的数据；幻读则是两次查询得到的记录数量不一致。"),
+    ("database", "关系范式", "第三范式（3NF）要求关系表中的每一列都与主键直接相关，而不能存在传递依赖。"),
+    ("database", "搜索引擎", "Elasticsearch底层依赖Lucene，通过建立‘倒排索引’，能够实现海量文本的毫秒级全文检索。"),
+    ("database", "锁机制", "悲观锁认为冲突大概率会发生，因此在操作前先加锁；乐观锁通常通过版本号机制来实现。"),
+    ("database", "Redis持久化", "RDB是Redis的内存快照持久化，AOF则是将执行的写命令追加到日志文件中。"),
+    ("database", "向量数据库", "向量数据库通过存储高维浮点数数组，并利用HNSW等算法计算空间距离，实现语义检索。"),
+
+    # --- 💻 操作系统领域 (10条) ---
+    ("os", "进程管理", "进程是操作系统资源分配的基本单位，拥有独立的内存空间；而线程是CPU调度的基本单位。"),
+    ("os", "死锁分析", "产生死锁的四个必要条件：互斥条件、请求和保持条件、不剥夺条件、环路等待条件。"),
+    ("os", "内存分配", "分页存储管理将内存划分为固定大小的物理块，解决了内存碎片问题，但可能产生内部碎片。"),
+    ("os", "虚拟内存", "虚拟内存允许程序使用比实际物理内存更大的地址空间，其核心依赖于局部性原理和页面置换。"),
+    ("os", "页面置换", "LRU（最近最少使用）算法淘汰最长时间未被访问的页面，是一种近似最优的页面置换策略。"),
+    ("os", "进程通信", "常见的进程间通信（IPC）方式包括：管道、消息队列、共享内存、信号量和套接字。"),
+    ("os", "同步机制", "信号量（Semaphore）是由荷兰学者Dijkstra提出的，用于解决多个进程对临界资源的互斥访问。"),
+    ("os", "中断机制", "中断是操作系统并发执行的基础，分为外部硬件中断和内部软件异常（如缺页中断）。"),
+    ("os", "文件系统", "FAT32、NTFS和EXT4是常见的文件系统格式，它们负责管理磁盘上的数据组织与存储。"),
+    ("os", "并发问题", "临界区是指访问共享资源的那段代码，同一时刻只能允许一个进程进入临界区执行。"),
+
+    # --- 🌐 计算机网络领域 (10条) ---
+    ("network", "TCP协议", "TCP是面向连接的可靠传输协议，通过三次握手建立连接，四次挥手断开连接。"),
+    ("network", "UDP协议", "UDP是无连接的尽最大努力交付协议，不保证可靠性，但传输速度快，常用于视频直播。"),
+    ("network", "网络模型", "OSI七层模型包括：物理层、数据链路层、网络层、传输层、会话层、表示层和应用层。"),
+    ("network", "HTTP状态码", "200表示请求成功，404表示资源未找到，500表示服务器内部错误，502为网关错误。"),
+    ("network", "DNS解析", "DNS系统负责将人类可读的域名（如baidu.com）转换为计算机可寻址的IP地址。"),
+    ("network", "HTTPS原理", "HTTPS在HTTP的基础上加入了SSL/TLS层，通过非对称加密交换密钥，对称加密传输数据。"),
+    ("network", "拥塞控制", "TCP的拥塞控制算法包括：慢开始、拥塞避免、快重传和快恢复四个核心阶段。"),
+    ("network", "IP地址", "IPv4地址长度为32位，IPv6地址长度为128位，旨在解决全球IP地址枯竭的问题。"),
+    ("network", "ARP协议", "ARP（地址解析协议）的作用是在局域网中，通过目标IP地址查询目标设备的MAC地址。"),
+    ("network", "长连接", "WebSocket是一种在单个TCP连接上进行全双工通信的协议，非常适合实时聊天室业务。"),
+
+    # --- 🧠 算法与数据结构 (10条) ---
+    ("algorithm", "排序算法", "快速排序采用分治策略，通过选取基准值将数组分为两部分，平均时间复杂度为O(n log n)。"),
+    ("algorithm", "散列表", "哈希表通过散列函数将键映射到数组索引，处理冲突的常见方法有拉链法和开放寻址法。"),
+    ("algorithm", "树结构", "二叉搜索树（BST）的左子树所有节点值小于根节点，右子树所有节点值大于根节点。"),
+    ("algorithm", "图论算法", "Dijkstra算法用于求解单源最短路径问题，但它不能处理带有负权边的图。"),
+    ("algorithm", "动态规划", "动态规划（DP）的核心思想是把复杂问题分解为子问题，并保存子问题的解来避免重复计算。"),
+    ("algorithm", "搜索策略", "DFS（深度优先搜索）通常使用栈来实现，而BFS（广度优先搜索）则利用队列来实现。"),
+    ("algorithm", "字符串匹配", "KMP算法利用部分匹配表（Next数组）避免字符串匹配时的指针回溯，时间复杂度为O(m+n)。"),
+    ("algorithm", "贪心策略", "贪心算法在每一步选择中都采取当前状态下的最优解，期望从而导致全局最优结果。"),
+    ("algorithm", "高级树", "红黑树是一种自平衡的二叉查找树，它通过节点着色和旋转机制，保证最坏查找时间为O(log n)。"),
+    ("algorithm", "堆结构", "优先队列通常使用二叉堆来实现，堆的插入和删除最大（小）值操作的时间复杂度都是O(log n)。"),
+
+    # --- 🤖 人工智能与前沿 (10条) ---
+    ("ai", "大模型原理", "Transformer架构的核心是‘自注意力机制’（Self-Attention），它使得模型能够理解上下文单词的关联。"),
+    ("ai", "RAG架构", "RAG（检索增强生成）通过外挂本地知识库，为大模型提供实时、准确的上下文，有效解决了AI幻觉问题。"),
+    ("ai", "深度学习", "反向传播（Backpropagation）是神经网络更新权重的基础，它利用链式法则计算损失函数的梯度。"),
+    ("ai", "LangChain", "LangChain是一个开源的大模型应用开发框架，它的LCEL链式语法极大简化了提示词拼装和工具调用。"),
+    ("ai", "提示词工程", "Prompt Engineering通过精确的指令设计、Few-shot（少样本）示例，引导大模型输出符合预期格式的结果。"),
+    ("ai", "Embedding", "文本向量化（Embedding）将人类语言映射为高维数学空间中的坐标点，语义相近的词在空间中距离也更近。"),
+    ("ai", "国产模型", "DeepSeek-V3 采用了MoE（混合专家）架构，在保持极高性能的同时大幅降低了推理和训练的算力成本。"),
+    ("ai", "机器视觉", "CNN（卷积神经网络）通过卷积核提取图像的局部特征，是目前图像分类和目标检测领域的主流架构。"),
+    ("ai", "过拟合", "在模型训练中，如果模型在训练集表现极好但在测试集极差，这被称为‘过拟合’，可通过正则化解决。"),
+    ("ai", "微调技术", "LoRA（低秩自适应）是一种高效的大模型微调技术，它只更新极少量的参数，普通显卡也能完成训练。")
+]
 
 def main():
-    # ---- 1. 连接 Redis（清空旧索引，确保幂等运行） ----
+    print("=" * 60)
+    print("Redis Vector 知识库 RAG 演示")
+    print("=" * 60)
+
+    # 1. 初始化
     client = Redis(host="localhost", port=6379)
-    client.ping()
-    print("[OK] Redis 连接成功")
+    try: client.execute_command("FT.DROPINDEX", "idx:rag_docs", "DD")
+    except: pass
 
-    try:
-        client.execute_command("FT.DROPINDEX", "idx:rag_docs", "DD")
-        print("[OK] 已清理旧索引")
-    except Exception:
-        pass
+    # 2. 加载模型
+    print("\n[1/3] 正在加载 BGE 语义模型 (转译文字为数学向量)...")
+    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
 
-    # ---- 2. 使用 FakeEmbeddings 作为占位 Embedding 模型 ----
-    # 避免依赖真实 OpenAI API Key，仅用于演示流程。
-    # size=128 表示生成 128 维的虚假向量。
-    embeddings = FakeEmbeddings(size=128)
+    # 3. 解析并组装这 50 条数据
+    print(f"[2/3] 正在从系统中读取 {len(RAW_DATA)} 条数据...")
+    docs = []
+    for topic, source, content in RAW_DATA:
+        docs.append(Document(page_content=content, metadata={"source": source, "topic": topic}))
 
-    # ---- 3. 构建带有 metadata 的 Document 对象 ----
-    docs = [
-        Document(
-            page_content="Redis 支持多种数据结构，包括 String、Hash、List、Set、SortedSet。",
-            metadata={"source": "Redis入门教程", "topic": "database"},
-        ),
-        Document(
-            page_content="HNSW 是一种高效的近似最近邻搜索算法，广泛用于向量数据库。",
-            metadata={"source": "向量数据库综述", "topic": "database"},
-        ),
-        Document(
-            page_content="《百年孤独》是哥伦比亚作家加西亚·马尔克斯的魔幻现实主义代表作。",
-            metadata={"source": "文学百科", "topic": "literature"},
-        ),
-        Document(
-            page_content="MySQL InnoDB 存储引擎使用 B+ 树作为主键索引的底层数据结构。",
-            metadata={"source": "MySQL深度解析", "topic": "database"},
-        ),
-    ]
-    print(f"[OK] 已构建 {len(docs)} 条 Document 对象")
-
-    # ---- 4. 【核心考点】自定义 metadata_schema，将 metadata 映射为 TagField ----
-    #
-    # RedisConfig 的 metadata_schema 参数接收一个 list[dict]，每个 dict
-    # 描述一个 metadata 字段如何映射为 Redis 索引字段：
-    #   • "name": 字段名（必须与 Document.metadata 中的 key 一致）
-    #   • "type": Redis 索引类型 —— "tag" 表示 TagField
-    #
-    # 使用 TAG 类型的好处：
-    #   - 倒排索引精确匹配：filter={"topic": "database"} 可以 O(1) 定位
-    #   - 支持多值标签：用分隔符（默认 "|"）可存多个标签
-    #   - 聚合分组：可按 topic 分组统计
-    #
-    # 如果不配置 metadata_schema，所有 metadata 默认以 TEXT 类型存储，
-    # 只能做全文搜索，无法做高效的精确过滤。
-    #
-    # RedisVectorStore 会自动为 page_content 创建 TEXT 字段，
-    # 为向量创建 VECTOR 字段（维度由 Embedding 模型自动推断），
-    # 无需手动声明。
-    metadata_schema = [
-        {"name": "source", "type": "tag"},
-        {"name": "topic", "type": "tag"},
-    ]
-
-    config = RedisConfig(
-        index_name="idx:rag_docs",
-        redis_client=client,
-        metadata_schema=metadata_schema,   # <-- 关键：metadata 到 TagField 的映射
-        indexing_algorithm="HNSW",         # 使用 HNSW 近似最近邻算法
-        distance_metric="COSINE",          # 余弦距离
-        embedding_dimensions=128,          # 与 FakeEmbeddings 一致
-    )
-
-    print("\n>>> 正在创建向量存储（将 Documents 向量化并写入 Redis）...")
+    # 4. 灌入 Redis
+    print(f"[3/3] 正在向 Redis 中注入向量并建立 HNSW 图索引...")
     vector_store = RedisVectorStore.from_documents(
-        documents=docs,
-        embedding=embeddings,
-        config=config,
+        docs, embeddings,
+        config=RedisConfig(
+            index_name="idx:rag_docs",
+            redis_client=client,
+            metadata_schema=[{"name": "topic", "type": "tag"}],
+            embedding_dimensions=512
+        )
     )
-    print("[OK] 向量存储创建完成，metadata_schema 已将 source/topic 映射为 TAG 字段")
+    print("✅ 知识库构建完毕！")
 
-    # ---- 5. 构建 Retriever，演示"Tag 过滤 + 向量相似度"混合查询 ----
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 3},
-    )
+    # 4. 设置 LLM (DeepSeek)
+    llm = ChatOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com", model="deepseek-chat") if DEEPSEEK_API_KEY else None
+    print("\n 已成功接入 DeepSeek LLM")
+    # 设计prompt
+    prompt = PromptTemplate.from_template("""你是一个专业的计算机科学导师。
+    请基于【参考资料】的内容来回答用户提问。你可以对资料内容进行口语化的解释、总结和延展。
+    但如果参考资料中的内容与提问【完全无关】，请明确回答：“抱歉，系统的本地私有知识库中未检索到相关内容。”
 
-    # ---- 5a. 无过滤：纯向量检索 ----
-    print("\n===== 场景 A：无过滤（纯向量语义检索） =====")
-    results = retriever.invoke("数据库索引原理")
-    for i, doc in enumerate(results):
-        print(f"  [{i + 1}] topic={doc.metadata['topic']} | "
-              f"source={doc.metadata['source']}")
-        print(f"       {doc.page_content[:60]}...")
+    【参考资料】：
+    {context}
 
-    # ---- 5b. 混合查询：先过滤 topic=database，再做向量检索 ----
-    print("\n===== 场景 B：混合查询（先 Tag 过滤 topic='database'，再向量相似度排序） =====")
-    # 使用 redisvl 的 Tag 类构造 FilterExpression：
-    #   Tag("topic") == "database"  →  Redis 查询语法 @topic:{database}
-    tag_filter = Tag("topic") == "database"
+    【用户提问】：
+    {question}
 
-    filtered_results = vector_store.similarity_search(
-        query="数据库索引原理",
-        k=3,
-        filter=tag_filter,  # <-- 这就是"混合查询"的关键参数
-    )
-    for i, doc in enumerate(filtered_results):
-        print(f"  [{i + 1}] topic={doc.metadata['topic']} | "
-              f"source={doc.metadata['source']}")
-        print(f"       {doc.page_content[:60]}...")
+    请回答：""")
 
-    # ---- 5c. 对比分析 ----
-    print("\n===== 对比分析 =====")
-    print(f"场景 A（无过滤）返回 {len(results)} 条结果，可能包含非 database 主题的内容")
-    print(f"场景 B（Tag 过滤）返回 {len(filtered_results)} 条结果，全部限定在 topic='database' 内")
+    # 5. 交互循环
+    while True:
+        query = input("\n🔍 输入问题 (输入'退出'结束): ")
+        if query in ['退出', 'exit']: break
 
-    print("\n[SUCCESS] RAG 混合检索演示完成！")
+        # 混合检索
+        print(f"[*] Redis 正在从50条数据中检索并计算余弦相似度距离...")
+        results = vector_store.similarity_search_with_score(query, k=4)
+        context = ""
+        print("-" * 60)
+        for idx, (doc,score) in enumerate(results):
+            print(f"[命中结果 {idx + 1}]")
+            print(f"    向量距离 (越小越相似) : {score:.4f}")
+            print(f"   ️ 业务标签 (Tag Filter) : [{doc.metadata['topic']}] - {doc.metadata['source']}")
+            print(f"    召回原文 : {doc.page_content}")
+            print("-" * 60)
+            context += f"[{idx + 1}] (领域: {doc.metadata['topic']} | 来源: {doc.metadata['source']}) {doc.page_content}\n"
 
+        # G环节：生成
+        if llm:
+            print("🤖 AI 正在基于检索内容生成解答...")
+            final_prompt = prompt.format(context=context, question=query)
+            response = llm.invoke(final_prompt)
+            print("\n" + "=" * 50)
+            print(response.content)
+            print("=" * 50)
+        else:
+            print("\n📜 [Redis 检索结果] (即将递交给大模型的小抄):")
+            print(context)
 
 if __name__ == "__main__":
     main()
