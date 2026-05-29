@@ -26,6 +26,31 @@ DATA_SOURCES = [
         "topic": "ahnu",
         "source": "安师大官网",
     },
+    {
+        "url": "https://ci.ahnu.edu.cn/info/1096/5461.htm",
+        "title": "安徽师范大学计算机与信息学院师资概况",
+        "topic": "ahnu",
+        "source": "安师大官网",
+    },
+    {
+        "url": "https://ci.ahnu.edu.cn/info/1101/8406.htm",
+        "title": "安徽师范大学计算机与信息学院软件工程专业课程体系",
+        "topic": "ahnu",
+        "source": "安师大官网",
+    },
+    {
+        "url": "https://ci.ahnu.edu.cn/info/1100/2930.htm",
+        "title": "安徽师范大学计算机与信息学院软件工程专业介绍",
+        "topic": "ahnu",
+        "source": "安师大官网",
+    },
+    {
+        "url": "https://ci.ahnu.edu.cn/xsgz/",
+        "title": "安徽师范大学计算机与信息学院学生工作网",
+        "topic": "ahnu",
+        "source": "安师大官网",
+    },
+
     # ---- 领域二：数据库原理核心考点（Wikipedia 中文版） ----
     {
         "url": "https://zh.wikipedia.org/zh-cn/%E5%85%B3%E7%B3%BB%E6%95%B0%E6%8D%AE%E5%BA%93",
@@ -72,7 +97,7 @@ DATA_SOURCES = [
 ]
 
 
-# ---- 请求头：模拟浏览器，避免被反爬拦截 ----
+# ---- 请求头 ----
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -100,13 +125,11 @@ def fetch_and_parse(url: str, title: str) -> str:
 
     soup = BeautifulSoup(resp.text, "lxml")
 
-    # 移除脚本、样式、导航等无关元素
     for tag in soup(["script", "style", "nav", "footer", "header",
                      "noscript", "iframe", "form", "input", "button",
                      "table", "sup", "link", "meta"]):
         tag.decompose()
 
-    # 移除 Wikipedia 的编辑链接、引用编号等噪音
     for cls in [".reference", ".mw-editsection", ".noprint",
                 ".sidebar", ".navbox", ".toc", ".thumb",
                 ".mw-jump-link", ".mw-cite-backlink"]:
@@ -148,7 +171,7 @@ def fetch_and_parse(url: str, title: str) -> str:
 
 def main():
     print("=" * 60)
-    print("  Redis Vector 双料知识库构建脚本")
+    print("  Redis Vector 知识库构建脚本")
     print("  数据领域：安师大计信学院 + 数据库原理")
     print("=" * 60)
 

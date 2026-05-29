@@ -1,5 +1,5 @@
 """
-Redis Vector RAG 演示 (100条学术知识库 + 真实RAG链路)
+Redis Vector RAG 演示
 """
 import warnings
 warnings.filterwarnings("ignore")
@@ -9,13 +9,16 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_redis import RedisConfig, RedisVectorStore
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
+from langchain_core.globals import set_llm_cache
+from langchain_community.cache import RedisCache
+from langchain_community.chat_message_histories import RedisChatMessageHistory
+
 from redis import Redis
 
 DEEPSEEK_API_KEY = "sk-ef3a4e5c1a0c437e8927f18b5a445534"
 
-# 📚 50 条计算机考点数据
+# 50 条计算机考点数据
 RAW_DATA = [
-    # --- 🗄️ 数据库领域 (10条) ---
     ("database", "数据库原理", "事务的ACID特性包括原子性、一致性、隔离性和持久性，是保证数据准确的核心。"),
     ("database", "MySQL底层", "InnoDB存储引擎默认使用B+树作为索引结构，其叶子节点包含完整数据，适合范围查询。"),
     ("database", "并发控制", "MVCC（多版本并发控制）通过保存数据的历史版本，实现读写不阻塞，解决了不可重复读问题。"),
@@ -27,7 +30,6 @@ RAW_DATA = [
     ("database", "Redis持久化", "RDB是Redis的内存快照持久化，AOF则是将执行的写命令追加到日志文件中。"),
     ("database", "向量数据库", "向量数据库通过存储高维浮点数数组，并利用HNSW等算法计算空间距离，实现语义检索。"),
 
-    # --- 💻 操作系统领域 (10条) ---
     ("os", "进程管理", "进程是操作系统资源分配的基本单位，拥有独立的内存空间；而线程是CPU调度的基本单位。"),
     ("os", "死锁分析", "产生死锁的四个必要条件：互斥条件、请求和保持条件、不剥夺条件、环路等待条件。"),
     ("os", "内存分配", "分页存储管理将内存划分为固定大小的物理块，解决了内存碎片问题，但可能产生内部碎片。"),
@@ -39,7 +41,6 @@ RAW_DATA = [
     ("os", "文件系统", "FAT32、NTFS和EXT4是常见的文件系统格式，它们负责管理磁盘上的数据组织与存储。"),
     ("os", "并发问题", "临界区是指访问共享资源的那段代码，同一时刻只能允许一个进程进入临界区执行。"),
 
-    # --- 🌐 计算机网络领域 (10条) ---
     ("network", "TCP协议", "TCP是面向连接的可靠传输协议，通过三次握手建立连接，四次挥手断开连接。"),
     ("network", "UDP协议", "UDP是无连接的尽最大努力交付协议，不保证可靠性，但传输速度快，常用于视频直播。"),
     ("network", "网络模型", "OSI七层模型包括：物理层、数据链路层、网络层、传输层、会话层、表示层和应用层。"),
@@ -51,7 +52,6 @@ RAW_DATA = [
     ("network", "ARP协议", "ARP（地址解析协议）的作用是在局域网中，通过目标IP地址查询目标设备的MAC地址。"),
     ("network", "长连接", "WebSocket是一种在单个TCP连接上进行全双工通信的协议，非常适合实时聊天室业务。"),
 
-    # --- 🧠 算法与数据结构 (10条) ---
     ("algorithm", "排序算法", "快速排序采用分治策略，通过选取基准值将数组分为两部分，平均时间复杂度为O(n log n)。"),
     ("algorithm", "散列表", "哈希表通过散列函数将键映射到数组索引，处理冲突的常见方法有拉链法和开放寻址法。"),
     ("algorithm", "树结构", "二叉搜索树（BST）的左子树所有节点值小于根节点，右子树所有节点值大于根节点。"),
@@ -63,7 +63,6 @@ RAW_DATA = [
     ("algorithm", "高级树", "红黑树是一种自平衡的二叉查找树，它通过节点着色和旋转机制，保证最坏查找时间为O(log n)。"),
     ("algorithm", "堆结构", "优先队列通常使用二叉堆来实现，堆的插入和删除最大（小）值操作的时间复杂度都是O(log n)。"),
 
-    # --- 🤖 人工智能与前沿 (10条) ---
     ("ai", "大模型原理", "Transformer架构的核心是‘自注意力机制’（Self-Attention），它使得模型能够理解上下文单词的关联。"),
     ("ai", "RAG架构", "RAG（检索增强生成）通过外挂本地知识库，为大模型提供实时、准确的上下文，有效解决了AI幻觉问题。"),
     ("ai", "深度学习", "反向传播（Backpropagation）是神经网络更新权重的基础，它利用链式法则计算损失函数的梯度。"),
@@ -83,14 +82,16 @@ def main():
 
     # 1. 初始化
     client = Redis(host="localhost", port=6379)
-    try: client.execute_command("FT.DROPINDEX", "idx:rag_docs", "DD")
+    try: client.execute_command("FT.DROP INDEX", "idx:rag_docs", "DD")
     except: pass
 
     # 2. 加载模型
-    print("\n[1/3] 正在加载 BGE 语义模型 (转译文字为数学向量)...")
+    print("\n[1/3] 正在加载 BGE 语义模型...")
     embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
+    print("[1.5/3] 正在挂载 Redis 语义缓存层...")
+    set_llm_cache(RedisCache(redis_=Redis(host="localhost", port=6379)))
 
-    # 3. 解析并组装这 50 条数据
+    # 3. 解析并组装数据
     print(f"[2/3] 正在从系统中读取 {len(RAW_DATA)} 条数据...")
     docs = []
     for topic, source, content in RAW_DATA:
@@ -109,13 +110,18 @@ def main():
     )
     print("✅ 知识库构建完毕！")
 
-    # 4. 设置 LLM (DeepSeek)
+    # 5. 设置 LLM
     llm = ChatOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com", model="deepseek-chat") if DEEPSEEK_API_KEY else None
-    print("\n 已成功接入 DeepSeek LLM")
-    # 设计prompt
+
     prompt = PromptTemplate.from_template("""你是一个专业的计算机科学导师。
-    请基于【参考资料】的内容来回答用户提问。你可以对资料内容进行口语化的解释、总结和延展。
-    但如果参考资料中的内容与提问【完全无关】，请明确回答：“抱歉，系统的本地私有知识库中未检索到相关内容。”
+    请基于【历史聊天记录】和【参考资料】的内容来回答用户提问。
+    ⚠️【格式严格要求】：
+    1. 请输出排版干净、自然易读的文本。
+    2. 绝对不要照抄或输出参考资料中的任何特殊分隔符（如 ///, ***, ---, === 等）。
+    3. 使用标准的 Markdown 标题或列表进行排版。
+
+    【历史聊天记录】：
+    {chat_history}
 
     【参考资料】：
     {context}
@@ -125,7 +131,10 @@ def main():
 
     请回答：""")
 
-    # 5. 交互循环
+    chat_history = RedisChatMessageHistory("rag_cli_session", url="redis://localhost:6379")
+    chat_history.clear()
+
+    # 6. 交互循环
     while True:
         query = input("\n🔍 输入问题 (输入'退出'结束): ")
         if query in ['退出', 'exit']: break
@@ -134,25 +143,37 @@ def main():
         print(f"[*] Redis 正在从50条数据中检索并计算余弦相似度距离...")
         results = vector_store.similarity_search_with_score(query, k=4)
         context = ""
-        print("-" * 60)
         for idx, (doc,score) in enumerate(results):
-            print(f"[命中结果 {idx + 1}]")
-            print(f"    向量距离 (越小越相似) : {score:.4f}")
-            print(f"   ️ 业务标签 (Tag Filter) : [{doc.metadata['topic']}] - {doc.metadata['source']}")
-            print(f"    召回原文 : {doc.page_content}")
-            print("-" * 60)
             context += f"[{idx + 1}] (领域: {doc.metadata['topic']} | 来源: {doc.metadata['source']}) {doc.page_content}\n"
 
         # G环节：生成
         if llm:
-            print("🤖 AI 正在基于检索内容生成解答...")
-            final_prompt = prompt.format(context=context, question=query)
+            print(" AI 正在基于历史记忆与检索内容生成解答...")
+
+            # 读取历史记忆
+            history_str = ""
+            for msg in chat_history.messages[-4:]:
+                role = "用户" if msg.type == "human" else "AI"
+                history_str += f"{role}: {msg.content}\n"
+            if not history_str:
+                history_str = "无"
+
+            # 组装发给大模型的Prompt
+            final_prompt = prompt.format(
+                chat_history=history_str,
+                context=context,
+                question=query
+            )
             response = llm.invoke(final_prompt)
+
             print("\n" + "=" * 50)
             print(response.content)
             print("=" * 50)
+
+            chat_history.add_user_message(query)
+            chat_history.add_ai_message(response.content)
         else:
-            print("\n📜 [Redis 检索结果] (即将递交给大模型的小抄):")
+            print("\n📜 [未配置 LLM，仅展示检索结果]:")
             print(context)
 
 if __name__ == "__main__":

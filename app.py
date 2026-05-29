@@ -1,242 +1,172 @@
 """
-Vector Search Engine — Dynamic Multi-Tab AI Exploration System
-Redis Stack + LangChain + HNSW
+Vector Search Engine
+Redis Stack + LangChain + HNSW + RAG + Cache + Memory
 """
 
 import os
-import re
+import time
 import streamlit as st
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_redis import RedisVectorStore
 from redis import Redis
 from redisvl.query.filter import Tag
-
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.globals import set_llm_cache
+from langchain_community.cache import RedisSemanticCache
+from langchain_community.chat_message_histories import RedisChatMessageHistory
 
 INDEX_NAME = "rag_knowledge_base"
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-ef3a4e5c1a0c437e8927f18b5a445534")
+
+embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
+
+if DEEPSEEK_API_KEY:
+    llm = ChatOpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        streaming=True
+    )
+else:
+    llm = None
+
+# 配置全局语义缓存
+try:
+    set_llm_cache(RedisSemanticCache(
+        redis_url="redis://localhost:6379",
+        embedding=embeddings,
+        score_threshold=0.3
+    ))
+except Exception as e:
+    pass
+
+# RAG 提示词模板
+RAG_PROMPT = PromptTemplate.from_template("""你是一个专业的知识库问答助手。
+请结合【历史聊天记录】和【参考资料】来回答用户的【最新问题】。
+如果参考资料中没有提及相关内容，请扩充回答。
+
+⚠️【格式严格要求】：
+1. 请输出排版干净、自然易读的文本。
+2. 绝对不要照抄或输出参考资料中的任何特殊分隔符（如 ///, ***, ---, === 等）。
+3. 使用标准的 Markdown 标题或列表进行排版。
+
+【历史聊天记录】：
+{chat_history}
+
+【参考资料】：
+{context}
+
+【最新问题】：
+{query}
+
+请回答：""")
 
 st.set_page_config(
     page_title="Vector Search Engine",
     layout="wide",
 )
 
-
-# ================================================================
-#                   Design System CSS — 现代高定排版
-# ================================================================
 st.markdown("""
 <style>
-    /* ----- 全局重置 ----- */
+    [data-testid="stAppViewContainer"], 
+    [data-testid="stMainBlockContainer"], 
+    [data-testid="stVerticalBlock"], 
     .stApp {
-        background: #FCFCFC;
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+        animation: none !important;
     }
-    header[data-testid="stHeader"],
-    [data-testid="stDecoration"],
-    #MainMenu, footer, .stDeployButton {
-        display: none !important;
+    header[data-testid="stHeader"], [data-testid="stDecoration"], #MainMenu, footer, .stDeployButton { display: none !important; }
+    [data-testid="stBottom"] {
+        background-color: #FFFFFF !important;
+        z-index: 9999 !important;
     }
-
-    /* ----- 正文排版 ----- */
-    .stMarkdown p {
-        line-height: 1.95 !important;
-        letter-spacing: 0.03em !important;
-        color: #334155;
-        font-size: 0.95rem;
-        margin-bottom: 1.6em !important;
-        text-align: justify !important;
-        text-justify: inter-word !important;
+    [data-testid="stChatInput"] {
+        background-color: #FFFFFF !important;
+        padding-bottom: 20px !important;
     }
-    .stMarkdown li, .stText {
-        line-height: 1.8;
-        letter-spacing: 0.03em;
-        color: #334155;
-        font-size: 0.95rem;
-        margin-bottom: 0.8em;
+    [data-testid="stChatInput"] * {
+        opacity: 1 !important;
+        background-color: transparent !important;
+        color: #1E293B !important;
+        cursor: text !important;
     }
-    h1, h2, h3 {
-        color: #0F172A !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.03em;
+    [data-testid="stMainBlockContainer"] {
+        padding-bottom: 150px !important; 
     }
-    h1 { font-size: 1.5rem !important; }
-    h2 { font-size: 1.1rem !important; }
-    h3 { font-size: 0.95rem !important; }
-
-    /* ----- 侧边栏 ----- */
-    [data-testid="stSidebar"] {
-        background: #F8FAFC;
-        border-right: 1px solid #E2E8F0;
+    [data-testid="stMainBlockContainer"] {
+        opacity: 1 !important;
+        filter: blur(0px) !important;
     }
-    [data-testid="stSidebar"] .stMarkdown {
-        color: #475569;
+    [data-testid="stSidebar"] { background: #F9FAFB; border-right: 1px solid #E5E7EB; }
+    /* 1. 消除 Streamlit 默认的底色 */
+    div[data-testid="stChatMessage"] {
+        background-color: transparent !important;
+        padding: 0 !important;
+        margin-bottom: 24px !important;
     }
-    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-        color: #94A3B8;
-    }
-
-    /* ----- 结果卡片 ----- */
-    .result-card {
-        background: #FAFAFA;
-        border: 1px solid #E2E8F0;
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05),
-                    0 2px 4px -1px rgba(0,0,0,0.03);
-        transition: box-shadow 0.15s ease;
-    }
-    .result-card:hover {
-        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.06),
-                    0 4px 6px -2px rgba(0,0,0,0.04);
+    
+    /* 2. 给 AI 的文本区套上极简气泡：淡灰蓝 (Slate 50)，左侧小尖角 */
+    div[data-testid="stChatMessageContent"] {
+        background-color: #F8FAFC !important; /* 淡色区别 1：AI专属淡灰蓝 */
+        border: 1px solid #E2E8F0 !important;
+        border-radius: 4px 20px 20px 20px !important; /* 左上角为锐角 */
+        padding: 18px 24px !important;
+        color: #1E293B !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02) !important;
+        max-width: 85% !important; /* 控制阅读宽度 */
     }
 
-    .card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 16px;
-        padding-bottom: 12px;
-        border-bottom: 1px solid #F1F5F9;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-    .card-title {
-        font-weight: 600;
-        font-size: 0.95rem;
-        color: #1E293B;
-        letter-spacing: 0.04em;
-    }
-    .card-badges {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-    }
-    .badge {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 999px;
-        font-size: 0.75rem;
-        font-weight: 500;
-        letter-spacing: 0.06em;
-    }
-    .badge-topic {
-        background: #F1F5F9;
-        color: #64748B;
-    }
-    .badge-score {
-        background: #ECFDF5;
-        color: #0F766E;
-    }
+    /* ----- 文本细节排版 ----- */
+    .stMarkdown p { line-height: 1.8 !important; letter-spacing: 0.02em !important; color: #334155; font-size: 0.95rem; margin-bottom: 1.2em !important; }
+    .stMarkdown li { line-height: 1.8; color: #334155; font-size: 0.95rem; }
+    
+    /* ----- 深度思考折叠面板样式 (内置在AI气泡中) ----- */
+    [data-testid="stExpander"] { border: none !important; background: transparent !important; box-shadow: none !important; margin-bottom: 0px !important; }
+    [data-testid="stExpander"] summary { color: #64748B !important; font-size: 0.9rem; padding-left: 0 !important; border-bottom: 1px dashed #E2E8F0; padding-bottom: 6px; }
+    [data-testid="stExpander"] summary p { color: #64748B !important; }
 
-    .card-body {
-        margin-bottom: 20px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-                     "Microsoft YaHei", "Helvetica Neue", sans-serif;
-    }
-    .card-para {
-        display: block;
-        line-height: 2.0 !important;
-        letter-spacing: 0.03em !important;
-        color: #334155;
-        font-size: 0.92rem;
-        margin-bottom: 0;
-        text-align: justify !important;
-        text-justify: inter-word !important;
-        text-indent: 2em;
-    }
+    /* ----- 还原：参考资料卡片样式 (使其在AI淡灰背景中凸显) ----- */
+    .result-card { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 18px; margin-top: 15px; margin-bottom: 10px; box-shadow: 0 2px 4px -1px rgba(0,0,0,0.02); }
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #F8FAFC; }
+    .card-title { font-weight: 600; font-size: 0.95rem; color: #0F172A; }
+    .card-badges { display: flex; gap: 8px; align-items: center; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 500; }
+    .badge-topic { background: #F1F5F9; color: #475569; }
+    .badge-score { background: #ECFDF5; color: #059669; }
+    .card-para { font-size: 0.88rem; color: #475569; line-height: 1.7; text-align: justify; }
+    .card-footer { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #F1F5F9; }
+    .card-footer a { color: #94A3B8; font-size: 0.8rem; text-decoration: none; }
 
-    .card-images {
-        margin: 16px 0;
-    }
-    .card-images img {
-        border-radius: 10px;
-        border: 1px solid #E2E8F0;
-        margin-bottom: 8px;
-    }
-
-    .card-footer {
-        margin-top: 14px;
-        padding-top: 12px;
-        border-top: 1px solid #F1F5F9;
-    }
-    .card-footer a {
-        color: #94A3B8;
-        font-size: 0.82rem;
-        text-decoration: none;
-        letter-spacing: 0.04em;
-        transition: color 0.15s;
-    }
-    .card-footer a:hover {
-        color: #475569;
-        text-decoration: underline;
-    }
-
-    /* ----- Chat 消息微调 ----- */
-    [data-testid="stChatMessage"] {
-        padding: 0.25rem 0;
-        background: transparent;
-    }
-
-    /* ----- Expander 去除（dashboard 保留基础样式） ----- */
-    [data-testid="stExpander"] summary {
-        font-weight: 500;
-        color: #475569;
-    }
-
-    /* ----- 指标卡 ----- */
-    [data-testid="stMetric"] {
-        background: #FAFAFA;
-        border: 1px solid #E2E8F0;
-        border-radius: 12px;
-        padding: 16px;
-    }
-    [data-testid="stMetric"] label {
-        color: #64748B !important;
-        font-size: 0.78rem;
-        letter-spacing: 0.06em;
-    }
-    [data-testid="stMetric"] [data-testid="stMetricValue"] {
-        color: #0F172A !important;
-        font-size: 1.6rem;
-        font-weight: 600;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ================================================================
-#                Redis 连接与向量存储初始化
-# ================================================================
+# 核心功能与缓存函数
 @st.cache_resource
 def init_vector_store():
     client = Redis(host="localhost", port=6379)
     client.ping()
-    embeddings = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-small-zh-v1.5"
-    )
     return RedisVectorStore.from_existing_index(
         index_name=INDEX_NAME,
         embedding=embeddings,
         redis_client=client,
     )
 
-
 vector_store = init_vector_store()
 client = Redis(host="localhost", port=6379)
 
-
-# ================================================================
-#                    动态获取真实分类标签
-# ================================================================
 @st.cache_data(ttl=30)
 def get_dynamic_topics() -> list[str]:
     try:
         raw = client.execute_command("FT.TAGVALS", INDEX_NAME, "topic")
-        if raw is None:
-            return []
+        if raw is None: return []
         return sorted([v.decode() if isinstance(v, bytes) else str(v) for v in raw])
     except Exception:
         return []
-
 
 @st.cache_data(ttl=30)
 def get_index_info() -> dict:
@@ -246,96 +176,109 @@ def get_index_info() -> dict:
         it = iter(raw)
         for k in it:
             key = k.decode() if isinstance(k, bytes) else str(k)
-            val = next(it)
-            info[key] = val
+            info[key] = next(it)
         return info
     except Exception:
         return {}
 
-
 def render_paragraphs(content: str) -> str:
-    """
-    将文本按 \\n\\n 拆分为段落，每段包裹在 <p class="card-para"> 中，
-    实现首行缩进 + 两端对齐的书刊级排版。空段落跳过。
-    """
     paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-    if not paragraphs:
-        return f'<p class="card-para">{content.strip()}</p>'
+    if not paragraphs: return f'<p class="card-para">{content.strip()}</p>'
     return "\n".join(f'<p class="card-para">{p}</p>' for p in paragraphs)
 
-
 def parse_image_paths(raw: str) -> list[str]:
-    if not raw:
-        return []
+    if not raw: return []
     candidates = raw.split(",")
     return [p.strip() for p in candidates if p.strip() and os.path.isfile(p.strip())]
+def render_user_bubble(text):
+    safe_text = text.replace('\n', '<br>')
+    html = f"""
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 24px; margin-top: 10px;">
+        <div style="background-color: #EFF6FF; border: 1px solid #DBEAFE; color: #1E293B; padding: 14px 20px; border-radius: 20px 4px 20px 20px; max-width: 75%; font-size: 0.95rem; line-height: 1.8; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+            {safe_text}
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
-# ================================================================
-#                        侧边栏 (Sidebar)
-# ================================================================
 dynamic_topics = get_dynamic_topics()
 topic_options = ["All"] + dynamic_topics
 
 with st.sidebar:
-    st.markdown("## 检索参数")
+    st.markdown("检索参数")
     top_k = st.slider("Top K", 1, 5, 3)
     if dynamic_topics:
         tag_option = st.selectbox("分类过滤", options=topic_options)
     else:
         tag_option = st.selectbox("分类过滤", options=["All"])
-        st.caption("知识库中暂无分类标签。")
 
-# ================================================================
-#                       Header
-# ================================================================
-st.title("向量检索引擎")
-st.caption("基于结构化知识库的动态语义搜索。")
+st.title("动态知识库交互空间")
 st.markdown("---")
 
-# ================================================================
-#                       双 Tab 布局
-# ================================================================
-tab_search, tab_dashboard = st.tabs([
-    "智能探索空间",
-    "知识引擎监控面板",
-])
+tab_search, tab_dashboard = st.tabs(["智能探索", "系统监控"])
 
-# ================================================================
-#              Tab 1: 智能探索空间
-# ================================================================
+# Tab 1: 智能探索空间
 with tab_search:
-    query = st.chat_input("向知识库提问，例如：什么是 ACID？...")
+    session_id = "default_user_session"
+    chat_history = RedisChatMessageHistory(session_id, url="redis://localhost:6379")
+    for msg in chat_history.messages[-40:]:
+        if msg.type == "human":
+            render_user_bubble(msg.content)
+        else:
+            with st.chat_message("assistant"):
+                st.markdown(msg.content)
+
+    query = st.chat_input("向大模型提问...")
 
     if query:
-        with st.chat_message("user"):
-            st.markdown(query)
+        render_user_bubble(query)
 
-        if tag_option == "All" or not dynamic_topics:
-            tag_filter = None
-        else:
-            tag_filter = Tag("topic") == tag_option
-
-        with st.spinner("正在搜索向量空间..."):
-            raw_results = vector_store.similarity_search_with_score(
-                query=query,
-                k=top_k,
-                filter=tag_filter,
-            )
+        tag_filter = None if (tag_option == "All" or not dynamic_topics) else Tag("topic") == tag_option
 
         with st.chat_message("assistant"):
-            if not raw_results:
-                st.markdown(
-                    "*未在向量空间中找到匹配的知识片段，"
-                    "请尝试优化查询语句或放宽分类过滤条件。*"
-                )
-            else:
-                st.markdown(
-                    "*基于底层向量空间的相似度比对，"
-                    "为您检索到以下高相关度知识片段：*"
-                )
-                st.markdown("---")
 
+            status_placeholder = st.empty()
+            status_placeholder.markdown("⏳ *正在理解语义并检索高维空间...*")
+
+            start_time = time.time()
+            raw_results = vector_store.similarity_search_with_score(query=query, k=top_k, filter=tag_filter)
+            think_time = time.time() - start_time
+            status_placeholder.empty()
+
+            with st.expander(f"💠 已思考 (检索用时 {think_time:.2f} 秒)", expanded=False):
+                if raw_results:
+                    st.markdown("已从数据库中提取相关片段作为参考...")
+                else:
+                    st.markdown("未检索到强相关数据，将直接生成回答...")
+
+            # 准备提示词
+            context_text = ""
+            for i, item in enumerate(raw_results):
+                doc = item[0] if isinstance(item, (tuple, list)) else item
+                source = doc.metadata.get("source", "未知来源")
+                clean_content = doc.page_content.replace('///', '').replace('***', '').replace('---', '')
+                context_text += f"\n[资料 {i + 1} - {source}]：\n{clean_content}\n"
+
+            history_text = ""
+            for msg in chat_history.messages[-40:]:
+                role = "用户" if msg.type == "human" else "AI"
+                history_text += f"{role}: {msg.content}\n"
+            if not history_text: history_text = "无"
+
+            if llm:
+                final_prompt = RAG_PROMPT.format(chat_history=history_text, context=context_text, query=query)
+                response_stream = llm.stream(final_prompt)
+                full_response = st.write_stream(response_stream)
+
+                chat_history.add_user_message(query)
+                chat_history.add_ai_message(full_response)
+            else:
+                st.info("未配置大模型 API Key。")
+
+            if raw_results:
+                st.markdown("<br><b style='color:#475569; font-size: 0.95rem;'>📚 溯源参考资料</b>",
+                            unsafe_allow_html=True)
                 for i, item in enumerate(raw_results):
                     if isinstance(item, (tuple, list)) and len(item) == 2:
                         doc, distance = item
@@ -345,106 +288,44 @@ with tab_search:
                     topic = doc.metadata.get("topic", "unknown")
                     source_url = doc.metadata.get("source", "")
                     title = doc.metadata.get("title", "")
-                    raw_paths = doc.metadata.get("image_paths", "")
-                    image_paths = parse_image_paths(raw_paths)
-
-                    if distance is not None:
-                        score = max(0.0, 1.0 - float(distance))
-                    else:
-                        score = 0.0
-
+                    image_paths = parse_image_paths(doc.metadata.get("image_paths", ""))
+                    score = max(0.0, 1.0 - float(distance)) if distance is not None else 0.0
                     source_label = title if title else source_url
+                    body_html = render_paragraphs(doc.page_content.replace('///', '').replace('***', ''))
 
-                    # ---- 卡片 HTML ----
-                    body_html = render_paragraphs(doc.page_content)
-                    card_html = f"""
-                    <div class="result-card">
-                        <div class="card-header">
-                            <span class="card-title">{source_label}</span>
-                            <div class="card-badges">
-                                <span class="badge badge-topic">{topic}</span>
-                                <span class="badge badge-score">{score:.4f}</span>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            {body_html}
-                        </div>
-                    """
-
+                    # 渲染纯白资料卡片
+                    card_html = f'<div class="result-card"><div class="card-header"><span class="card-title">[{i + 1}] {source_label}</span><div class="card-badges"><span class="badge badge-topic">{topic}</span><span class="badge badge-score">相似度: {score:.4f}</span></div></div><div class="card-body">{body_html}</div>'
                     if source_url.startswith("http"):
-                        card_html += f"""
-                        <div class="card-footer">
-                            <a href="{source_url}" target="_blank">View Source Document &rarr;</a>
-                        </div>
-                        """
-
+                        card_html += f'<div class="card-footer"><a href="{source_url}" target="_blank">查看原文 &rarr;</a></div>'
                     card_html += "</div>"
 
                     st.markdown(card_html, unsafe_allow_html=True)
 
-                    # ---- 渲染抽取的图片 ----
+                    # 渲染配图
                     if image_paths:
-                        st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
                         cols = st.columns(min(len(image_paths), 3))
                         for j, img_path in enumerate(image_paths):
                             with cols[j % 3]:
-                                st.image(
-                                    img_path,
-                                    use_container_width=True,
-                                    caption="教材原页扫描图",
-                                )
+                                st.image(img_path, use_container_width=True, caption="匹配到的资料图片")
 
-                    st.markdown(
-                        '<div style="height:24px;"></div>',
-                        unsafe_allow_html=True,
-                    )
-
-# ================================================================
-#              Tab 2: 知识引擎监控面板
-# ================================================================
+# Tab 2: 知识引擎监控面板
 with tab_dashboard:
     st.markdown("### 知识引擎监控面板")
-    st.caption("Redis Stack 实时索引健康度与统计信息。")
-
     index_info = get_index_info()
 
     if not index_info:
-        st.caption("未找到索引。请先运行 build_knowledge.py 构建知识库。")
+        st.caption("未找到索引。请先运行数据注入脚本构建知识库。")
     else:
-        num_docs = index_info.get("num_docs", 0)
-        if isinstance(num_docs, bytes):
-            num_docs = int(num_docs.decode())
-        else:
-            num_docs = int(num_docs)
-
-        failures = index_info.get("hash_indexing_failures", 0)
-        if isinstance(failures, bytes):
-            failures = int(failures.decode())
-        else:
-            failures = int(failures)
-
-        num_topics = len(dynamic_topics)
+        num_docs = int(index_info.get("num_docs", b"0").decode()) if isinstance(index_info.get("num_docs"), bytes) else int(index_info.get("num_docs", 0))
+        failures = int(index_info.get("hash_indexing_failures", b"0").decode()) if isinstance(index_info.get("hash_indexing_failures"), bytes) else int(index_info.get("hash_indexing_failures", 0))
 
         st.markdown("---")
-
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("知识片段总数", num_docs)
         with c2:
-            st.metric("唯一主题数", num_topics)
+            st.metric("唯一主题数", len(dynamic_topics))
         with c3:
             st.metric("向量维度", 512)
         with c4:
-            st.metric("索引失败次数", failures, delta=None if failures == 0 else f"{failures}")
-
-        st.markdown("---")
-
-        if index_info:
-            st.caption("FT.INFO 原始输出：")
-            with st.expander("查看完整索引元数据"):
-                filtered = {
-                    k: (v.decode() if isinstance(v, bytes) else v)
-                    for k, v in index_info.items()
-                    if not isinstance(v, (bytes, bytearray)) or len(v) < 5000
-                }
-                st.json(filtered)
+            st.metric("索引失败次数", failures)

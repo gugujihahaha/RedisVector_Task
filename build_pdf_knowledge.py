@@ -60,9 +60,7 @@ def clean_ocr_text(text: str) -> str:
     raw_paragraphs = text.split("\n\n")
     cleaned = []
     for para in raw_paragraphs:
-        # 段内：孤立换行符 → 视为 OCR 排版截断，替换为空格
         para = re.sub(r"\n+", " ", para)
-        # 合并多余空白
         para = re.sub(r"\s{2,}", " ", para)
         para = para.strip()
         if len(para) >= 10:
