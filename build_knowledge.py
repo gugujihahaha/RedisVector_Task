@@ -1,5 +1,5 @@
 """
-知识库构建脚本 —— 双料数据源爬取、切片、向量化灌库
+知识库构建脚本 —— 数据源爬取、切片、向量化灌库
 数据来源：安师大计信学院官网 + Wikipedia/MDN 数据库考点
 使用 requests + BeautifulSoup 精准提取正文内容
 """
@@ -15,9 +15,7 @@ from langchain_redis import RedisConfig, RedisVectorStore
 from redis import Redis
 
 
-# ============================================================
-# 定义数据源：URL + metadata
-# ============================================================
+# 定义数据源
 DATA_SOURCES = [
     # ---- 领域一：安徽师范大学计信学院 ----
     {
@@ -51,7 +49,7 @@ DATA_SOURCES = [
         "source": "安师大官网",
     },
 
-    # ---- 领域二：数据库原理核心考点（Wikipedia 中文版） ----
+    # ---- 领域二：数据库原理核心考点 ----
     {
         "url": "https://zh.wikipedia.org/zh-cn/%E5%85%B3%E7%B3%BB%E6%95%B0%E6%8D%AE%E5%BA%93",
         "title": "关系数据库",
@@ -96,8 +94,6 @@ DATA_SOURCES = [
     },
 ]
 
-
-# ---- 请求头 ----
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -110,16 +106,7 @@ HEADERS = {
 
 
 def fetch_and_parse(url: str, title: str) -> str:
-    """
-    使用 requests 抓取网页，BeautifulSoup 提取正文。
-    支持多种页面结构的自动适配：
-    - Wikipedia: .mw-parser-output
-    - 高校官网: .main-content, .container
-    - MDN: article, .main-content
-    - 通用回退: body 全文本
-
-    返回提取到的纯文本字符串。
-    """
+    # 使用 requests 抓取网页，BeautifulSoup 提取正文。
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.encoding = "utf-8"
 
@@ -136,19 +123,17 @@ def fetch_and_parse(url: str, title: str) -> str:
         for tag in soup.select(cls):
             tag.decompose()
 
-    # ---- 策略 1: Wikipedia 正文区 ----
     content = soup.select_one(".mw-parser-output")
     if content:
         texts = []
         for p in content.find_all(["p", "li", "h2", "h3", "h4", "dd", "dt"]):
             t = p.get_text(separator=" ", strip=True)
-            t = re.sub(r"\[\d+\]", "", t)  # 移除引用标记 [1] [2]
+            t = re.sub(r"\[\d+\]", "", t)
             if t and len(t) > 8:
                 texts.append(t)
         if texts:
             return f"【{title}】\n\n" + "\n\n".join(texts)
 
-    # ---- 策略 2: 通用文章区 ----
     for sel in ["article", ".main-content", ".content", "#content",
                 ".container", ".post-content", ".entry-content"]:
         main = soup.select_one(sel)
@@ -158,7 +143,6 @@ def fetch_and_parse(url: str, title: str) -> str:
             if len(t) > 200:
                 return f"【{title}】\n\n" + t
 
-    # ---- 策略 3: body 全文本回退 ----
     body = soup.find("body")
     if body:
         t = body.get_text(separator="\n", strip=True)

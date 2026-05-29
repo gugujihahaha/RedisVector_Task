@@ -1,6 +1,5 @@
 """
-本地 PDF 教材批量解析 & 增量灌库脚本 (OCR 图文版)
-针对图片扫描版 PDF：每页截图 + pytesseract 中文 OCR → Redis 向量知识库。
+本地 PDF 教材批量解析 & 增量灌库脚本
 """
 
 import os
@@ -16,7 +15,6 @@ PDF_DIR = "JiaoCai"
 IMG_DIR = os.path.join(PDF_DIR, "extracted_images")
 INDEX_NAME = "rag_knowledge_base"
 
-# ---- 依赖可用性检测 ----
 TESSERACT_OK = False
 PDF2IMAGE_OK = False
 
@@ -45,15 +43,6 @@ def map_topic(filename: str) -> str:
 
 
 def clean_ocr_text(text: str) -> str:
-    """
-    OCR 文本高级清洗流水线：
-    1. 先规范化所有换行符
-    2. 将 3+ 连续换行统一压缩为段落分隔符 \\n\\n
-    3. 按段落拆分，段内把孤立的单换行视为排版截断，直接移除
-    4. 段内合并不规范的多余空白
-    5. 剔除段首段尾的零碎空格
-    6. 只保留长度 >= 10 的有意义段落
-    """
     text = re.sub(r"\r\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
@@ -70,7 +59,6 @@ def clean_ocr_text(text: str) -> str:
 
 
 def check_tesseract_chinese() -> bool:
-    """检测 Tesseract 是否安装了中文语言包。"""
     try:
         langs = pytesseract.get_languages()
         return "chi_sim.traineddata" in langs or "chi_tra" in langs
@@ -83,7 +71,6 @@ def main():
     print("  本地 PDF 教材批量解析 & 增量灌库脚本 (OCR)")
     print("=" * 60)
 
-    # ---- 依赖检查 ----
     if not PDF2IMAGE_OK:
         print("\n[ERROR] 缺少 pdf2image 库。请执行: pip install pdf2image")
         print("  此外还需安装 poppler 工具:")
@@ -107,7 +94,6 @@ def main():
         print("    Linux:   sudo apt install tesseract-ocr-chi-sim")
         sys.exit(1)
 
-    # ---- 1. 扫描文件夹 ----
     if not os.path.isdir(PDF_DIR):
         print(f"\n[ERROR] 未找到 '{PDF_DIR}/' 文件夹。")
         print("请在项目根目录创建 JiaoCai/ 文件夹，并将 PDF 教材放入其中。")
@@ -129,7 +115,6 @@ def main():
     print(f"  [OK] 图片输出目录: {IMG_DIR}/")
     print(f"  [OK] OCR 引擎: Tesseract (lang=chi_sim)")
 
-    # ---- 2. 逐页转图 + OCR ----
     print("\n[2/5] 正在将 PDF 转为图像并 OCR 识别...")
     all_docs = []
     total_pages = 0
@@ -158,14 +143,12 @@ def main():
             img_filename = f"{title}_page{page_num}.png"
             img_path = os.path.join(IMG_DIR, img_filename)
 
-            # 保存整页截图
             try:
                 image.save(img_path, "PNG")
             except Exception as e:
                 print(f"    ✗ 保存图片失败 (page {page_num}): {e}")
                 continue
 
-            # OCR 识别
             try:
                 raw_text = pytesseract.image_to_string(image, lang="chi_sim")
             except Exception as e:
@@ -200,7 +183,6 @@ def main():
     print(f"\n  总计: {len(pdf_files)} 文件, {total_pages} 有效 OCR 页, "
           f"{total_chars} 字符, {total_pages} 张整页截图")
 
-    # ---- 3. 语义切片 ----
     print("\n[3/5] 正在进行语义切片 (chunk_size=1000, overlap=150)...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -210,7 +192,6 @@ def main():
     chunks = text_splitter.split_documents(all_docs)
     print(f"  [OK] 切片完成: {total_pages} 页 → {len(chunks)} 个语块")
 
-    # ---- 4. 向量化 & 增量写入 ----
     print("\n[4/5] 正在向量化并增量写入 Redis...")
     print("  模型: BAAI/bge-small-zh-v1.5 (512 维)")
 

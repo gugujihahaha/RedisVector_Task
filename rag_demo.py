@@ -136,7 +136,7 @@ def main():
 
     # 6. 交互循环
     while True:
-        query = input("\n🔍 输入问题 (输入'退出'结束): ")
+        query = input("\n 输入问题 (输入'退出'结束): ")
         if query in ['退出', 'exit']: break
 
         # 混合检索
@@ -173,7 +173,7 @@ def main():
             chat_history.add_user_message(query)
             chat_history.add_ai_message(response.content)
         else:
-            print("\n📜 [未配置 LLM，仅展示检索结果]:")
+            print("\n [未配置 LLM，仅展示检索结果]:")
             print(context)
 
 if __name__ == "__main__":
