@@ -96,9 +96,11 @@ st.markdown("""
     }
     header[data-testid="stHeader"], [data-testid="stDecoration"], #MainMenu, footer, .stDeployButton { display: none !important; }
 
-    [data-testid="stMainBlockContainer"] {
-        opacity: 1 !important;
-        filter: blur(0px) !important;
+    [data-testid="stMainBlockContainer"] { 
+        opacity: 1 !important; 
+        filter: blur(0px) !important; 
+        padding-bottom: 50px !important; 
+        padding-top: 1rem !important; 
     }
     [data-testid="stSidebar"] { background: #F9FAFB; border-right: 1px solid #E5E7EB; }
     /* 1. 消除 Streamlit 默认的底色 */
@@ -237,7 +239,7 @@ with tab_search:
     session_id = st.session_state.session_id
 
     chat_history = RedisChatMessageHistory(session_id, url="redis://localhost:6379")
-    chat_container = st.container(height=600, border=False)
+    chat_container = st.container(height=400, border=False)
     with chat_container:
         for msg in chat_history.messages[-40:]:
             if msg.type == "human":

@@ -25,6 +25,7 @@
 | Docker Desktop | 24.0+ | 用于运行 Redis Stack 容器 |
 | Python | 3.10+ | 运行实验脚本 |
 | Git | 任意版本 | 拉取代码 |
+| DeepSeek API Key | — | 驱动 RAG 智能问答与 Web 演示的大模型服务 |
 
 ---
 
@@ -97,7 +98,7 @@ python rag_demo.py
    - `category`（TAG）—— 精确分类过滤
    - `embedding`（VECTOR HNSW FLOAT32 COSINE）—— 向量字段
 
-2. **向量数据写入（Create）**：使用 numpy 生成随机向量，通过 `struct.pack` 将 float32 数组序列化为 bytes，再通过 `HSET` 存入 Redis Hash
+2. **向量数据写入（Create）**：接入 `BAAI/bge-small-zh-v1.5` 模型实时生成真实的 **512 维**语义向量，通过 `struct.pack` 将 float32 数组序列化为 bytes，再通过 `HSET` 存入 Redis Hash
 
 3. **向量数据读取（Read）**：使用 `HGETALL` 读取 Hash 中存储的完整记录，包括反序列化向量二进制
 
@@ -116,7 +117,7 @@ python rag_demo.py
 
 1. **metadata_schema 映射**：通过 `RedisConfig.metadata_schema` 将 Document 的 metadata 字段（如 `topic`、`source`）映射为 Redis 的 TagField，实现元数据索引
 
-2. **FakeEmbeddings 占位**：使用 LangChain 内置的 `FakeEmbeddings` 替代真实 Embedding 模型，无需 API Key 即可跑通流程
+2. **真实 Embedding + 大模型驱动**：接入 `BAAI/bge-small-zh-v1.5`（512 维）生成真实语义向量，后端由 **DeepSeek API**（`deepseek-chat` 模型）提供 RAG 生成能力，实现真正的混合检索验证，无需任何 Fake/占位组件即可端到端跑通
 
 3. **混合检索**：演示"Tag 过滤 + 向量相似度"的联合查询
    - 场景 A：纯向量检索（可能混入不相关主题）
@@ -228,7 +229,7 @@ docker compose down -v
 
 ### 8.1 网页爬取灌库 (`build_knowledge.py`)
 
-自动爬取指定网页 → 文本语义切片 → BGE-m3 向量化 → 存入 Redis Vector。
+自动爬取指定网页 → 文本语义切片 → `BAAI/bge-small-zh-v1.5` 向量化（**512 维**）→ 存入 Redis Vector。
 
 **新增依赖：**
 
@@ -264,6 +265,12 @@ python build_pdf_knowledge.py
 
 基于 Streamlit 的交互式查询界面，用于在课程答辩中进行 Redis Vector 检索效果的现场演示。
 
+**核心亮点：**
+
+- **DeepSeek API 驱动**：后端接入 `deepseek-chat` 大模型（`https://api.deepseek.com`），提供流式 RAG 生成能力，LLM 生成的回答以打字机效果逐字呈现
+- **`@st.cache_resource` 模型缓存**：利用 Streamlit 的资源级缓存装饰器将约 80MB 的 `BAAI/bge-small-zh-v1.5` Embedding 模型常驻内存，用户刷新页面或重复查询时无需重新加载，实现**零延迟响应**
+- **UUID 会话记忆隔离**：每次浏览器会话自动生成 `session_{uuid.uuid4()}` 唯一标识，基于 `RedisChatMessageHistory` 将不同用户的对话历史安全隔离存储，避免多用户并发时的记忆串扰
+
 **安装与启动：**
 
 ```bash
@@ -281,18 +288,24 @@ streamlit run app.py
 
 本次调研的核心成果：从底层 `redis` 库（`basic_ops.py`）到上层 LangChain 封装（`rag_demo.py`），完整演示了 Redis Vector 的索引创建、数据写入、向量检索、结果过滤、索引删除的全生命周期操作。代码中每一处原始 Redis 命令调用均有详细注释，可直接作为调研报告的实验佐证。
 
-### 9.2 Docker 容器化持久化
+### 9.2 真实模型端到端闭环
+
+全链路消除随机/占位组件，统一使用 `BAAI/bge-small-zh-v1.5`（512 维）进行语义向量生成，后端由 **DeepSeek API** 提供大模型推理能力。从知识库构建（`build_knowledge.py`）→ 底层 CRUD（`basic_ops.py`）→ 混合检索（`rag_demo.py`）→ Web 可视化（`app.py`），四阶段形成完整的 RAG 验证闭环。
+
+### 9.3 Docker 容器化持久化
 
 使用 `docker-compose.yml` 实现数据卷强绑定，通过 `external: true` 声明外部命名卷并指定 `name: redis_rag_data`，确保即使执行 `docker compose down` 删除容器后，向量数据仍然完好地保存在宿主机磁盘上。重新 `docker compose up -d` 即可秒级恢复。
 
-### 9.3 前端交互设计
+### 9.4 前端交互设计
 
 `app.py` 的 UI 实现包括：
 - 输入框固定在页面底部，符合现代对话式 AI 产品的交互习惯
 - 优化了 Streamlit 的 `st.rerun()` 触发逻辑，消除搜索时的页面闪烁
 - LLM 生成的回答以打字机效果逐字呈现
+- 利用 `@st.cache_resource` 缓存 80MB Embedding 模型，刷新页面零延迟
+- UUID 机制实现多用户会话记忆安全隔离
 
-### 9.4 内网穿透方案
+### 9.5 内网穿透方案
 
 系统采用 **cpolar** 作为内网穿透方案，支持 WebSocket 长连接，提供公网 HTTPS 链接，评审老师可直接打开访问，无需配置本地环境。
 
